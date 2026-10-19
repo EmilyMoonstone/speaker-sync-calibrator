@@ -111,6 +111,21 @@
   .dot.err { background: var(--bad); }
   @keyframes pulse { 50% { opacity: .3; } }
 
+  .live { margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+  .liverow { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 8px; }
+  .liverow .sub { margin: 0; }
+  .meter { position: relative; height: 10px; background: var(--line); border-radius: 5px; overflow: hidden; }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--good); transition: width .08s linear; }
+  .meter > i.quiet { background: var(--warn); }
+  .meter > i.clip { background: var(--bad); }
+  .meter > b { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); left: 0; }
+  .pill.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  #live-tally { margin-top: 8px; }
+  #live-tally td { font-size: 13px; }
+  .human { flex-direction: column; align-items: flex-start; }
+  .human > span:last-child { display: flex; gap: 8px; flex-wrap: wrap; }
+  .num { font-variant-numeric: tabular-nums; }
+
   .bar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 10px; }
   .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .35s ease; }
 
@@ -223,6 +238,31 @@
       <span id="status" data-i18n="idle"></span>
     </div>
     <div class="bar"><i id="bar"></i></div>
+
+    <div class="live" id="live" hidden>
+      <div class="meter" title="dBFS"><i id="meter-fill"></i><b id="meter-peak"></b></div>
+      <div class="liverow">
+        <span class="sub" data-i18n="mic_level"></span>
+        <span id="meter-text" class="num">—</span>
+      </div>
+      <div class="liverow">
+        <span class="sub" data-i18n="now_playing"></span>
+        <b id="live-playing">—</b>
+      </div>
+      <div class="liverow">
+        <span class="sub" data-i18n="mic_hears"></span>
+        <span id="live-heard" class="pill">—</span>
+      </div>
+      <table id="live-tally"></table>
+      <div class="liverow human" id="human" hidden>
+        <span class="sub" data-i18n="human_question"></span>
+        <span>
+          <button class="toggle" id="human-ok" data-i18n="human_ok"></button>
+          <button class="toggle" id="human-wrong" data-i18n="human_wrong"></button>
+        </span>
+      </div>
+    </div>
+
     <div class="setting">
       <label for="chirps" data-i18n="chirps_label"></label>
       <input id="chirps" type="number" min="3" max="40" step="1" inputmode="numeric">
@@ -233,6 +273,7 @@
       <button id="run" data-i18n="run"></button>
       <button id="check" class="secondary" data-i18n="check"></button>
       <button id="listen" class="secondary" data-i18n="listen"></button>
+      <button id="mictest" class="secondary" data-i18n="mic_test"></button>
     </div>
     <p class="note" data-i18n="run_note"></p>
     <p class="note" data-i18n="check_note"></p>

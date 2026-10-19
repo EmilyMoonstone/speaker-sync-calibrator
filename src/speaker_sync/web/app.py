@@ -33,6 +33,7 @@ import numpy as np
 from aiohttp import WSMsgType, web
 
 from speaker_sync import i18n
+from speaker_sync.calibration.live import LiveMonitor
 from speaker_sync.calibration.profiles import Profile, ProfileStore, apply_profile
 from speaker_sync.calibration.session import (
     AlignmentCheck,
@@ -310,16 +311,39 @@ class BrowserRecorder:
     both unknown and variable, and the entire measurement is a timing one.
     """
 
-    def __init__(self, socket: web.WebSocketResponse) -> None:
+    def __init__(
+        self,
+        socket: web.WebSocketResponse,
+        live: Callable[[dict], None] | None = None,
+    ) -> None:
         self._socket = socket
+        self._live = live
         self._chunks: list[np.ndarray] = []
         self._sample_rate: int | None = None
         self._complete = asyncio.Event()
         self._timeout = RECORDING_TIMEOUT_FLOOR_SECONDS
+        self._signal: TestSignal | None = None
+        self._monitor: LiveMonitor | None = None
+        self.human_feedback: list[dict] = []
+        """What the person holding the phone said about the rounds, in order.
+
+        Each entry names the speaker that was supposed to be playing alone and
+        whether that matched what they heard. Cleared at the start of a job.
+        """
+
+    def note_feedback(self, player_id: str, ok: bool) -> None:
+        self.human_feedback.append({"player_id": str(player_id), "ok": bool(ok)})
+
+    def set_format(self, sample_rate: int) -> None:
+        """The browser's rate, told up front so the live check can start."""
+        if self._signal is not None and sample_rate > 0:
+            self._monitor = LiveMonitor(self._signal, int(sample_rate))
 
     async def start(self, signal: TestSignal) -> None:
         self._chunks.clear()
         self._sample_rate = None
+        self._signal = signal
+        self._monitor = None
         self._complete.clear()
         self._timeout = max(
             RECORDING_TIMEOUT_FLOOR_SECONDS,
@@ -352,7 +376,11 @@ class BrowserRecorder:
         return np.concatenate(self._chunks), self._sample_rate
 
     def feed(self, payload: bytes) -> None:
-        self._chunks.append(np.frombuffer(payload, dtype=np.float32).astype(np.float64))
+        chunk = np.frombuffer(payload, dtype=np.float32).astype(np.float64)
+        self._chunks.append(chunk)
+        if self._monitor is not None and self._live is not None:
+            for reading in self._monitor.feed(chunk):
+                self._live({"type": "live", **reading.to_dict()})
 
     def complete(self, sample_rate: int) -> None:
         self._sample_rate = int(sample_rate)
@@ -538,6 +566,7 @@ def create_app(state: AppState) -> web.Application:
                 # session's own arithmetic.
                 "guard_chirps": state.session_config.guard_chirps,
                 "period_seconds": state.session_config.period_seconds,
+                "measure_passes": state.session_config.measure_passes,
             }
         )
 
@@ -712,8 +741,8 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
     socket = web.WebSocketResponse(max_msg_size=64 * 1024 * 1024, heartbeat=20.0)
     await socket.prepare(request)
 
-    recorder = BrowserRecorder(socket)
     outbox: asyncio.Queue[dict] = asyncio.Queue()
+    recorder = BrowserRecorder(socket, live=outbox.put_nowait)
     running: asyncio.Task | None = None
 
     async def pump() -> None:
@@ -740,6 +769,12 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
             kind = payload.get("type")
             if kind == "recording_done":
                 recorder.complete(payload.get("sample_rate", 48000))
+            elif kind == "recording_format":
+                if isinstance(payload.get("sample_rate"), (int, float)):
+                    recorder.set_format(int(payload["sample_rate"]))
+            elif kind == "human_feedback":
+                if isinstance(payload.get("player_id"), str) and isinstance(payload.get("ok"), bool):
+                    recorder.note_feedback(payload["player_id"], payload["ok"])
             elif kind in {"calibrate", "probe_sign", "check", "listen"}:
                 if running is not None and not running.done():
                     outbox.put_nowait({"type": "error", "message": _busy_message()})
@@ -769,6 +804,7 @@ async def _run_job(
 
     state.busy = True
     progress = outbox.put_nowait
+    recorder.human_feedback.clear()
     try:
         # One view of the speakers for the whole job, switches already applied.
         speakers = state.speakers

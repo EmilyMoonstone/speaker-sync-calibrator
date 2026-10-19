@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 (fork EmilyMoonstone)
+- **Live view while measuring**: microphone level meter, which speaker should be playing, whether the test sound is heard (good / quiet / none / overdriven) and a per-speaker tally.
+- **Your ear counts**: during each round, "only this speaker audible?" — answering no stops the run from writing anything.
+- **Test microphone** button to check the level before measuring.
+- More robust: measures twice and takes the median, measures a third time when passes disagree or a speaker went unheard, names a speaker whose delay wanders between passes, and corrects up to twice more when a speaker applied only part of its correction.
+
 ## 0.2.0 (fork EmilyMoonstone)
 - After a calibration, a check, a sign probe or the listening test, every speaker is back in the group, mute state and volume it was in before — also when the run fails or the browser is closed. No more helper group blocking a sync group ("can not be grouped with").
 - A speaker without a delay setting (e.g. MassDroid) is measured as a **reference (not adjustable)**: the others are aligned to it, and it is never written to. When it arrives after the others, nothing is written and the report says why.

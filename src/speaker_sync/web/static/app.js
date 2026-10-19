@@ -96,6 +96,26 @@ const STRINGS = {
     nothing_to_write: 'Already in line — nothing needed writing, so nothing was.',
     position_note: 'The alignment holds where the microphone stood; each metre closer to'
       + ' one speaker than the microphone was makes it ~3 ms early.',
+    mic_level: 'Microphone',
+    now_playing: 'Should be playing',
+    mic_hears: 'Microphone hears',
+    all_together: 'every speaker at once',
+    nobody: '—',
+    verdict_ok: 'test sound — good level',
+    verdict_quiet: 'test sound — quiet, turn up',
+    verdict_silent: 'no test sound',
+    verdict_clipping: 'too loud — overdriven',
+    tally_heard: (v) => `heard ${v.heard} of ${v.total}`,
+    human_question: 'Only this speaker audible?',
+    human_ok: '✓ yes',
+    human_wrong: '✗ no, something else',
+    human_thanks_ok: 'Noted: sounded right.',
+    human_thanks_wrong: 'Noted — this run will not write anything.',
+    mic_test: 'Test microphone',
+    mic_test_stop: 'Stop microphone test',
+    mic_test_note: 'Microphone open. Play something and watch the level; it should move but not turn red.',
+    refining: 'Correcting the remaining difference …',
+    measuring_attempt: (v) => `Measuring (${v.attempt} of ${v.planned}) …`,
     ready_pill: 'ready',
     not_taking_part: 'not taking part',
     switch_off: 'switch off',
@@ -206,6 +226,26 @@ const STRINGS = {
     nothing_to_write: 'Уже выровнено — записывать было нечего, и ничего не записано.',
     position_note: 'Выравнивание верно там, где стоял микрофон; каждый метр ближе к одной'
       + ' из колонок даёт ей ~3 мс опережения.',
+    mic_level: 'Микрофон',
+    now_playing: 'Сейчас должна звучать',
+    mic_hears: 'Микрофон слышит',
+    all_together: 'все колонки сразу',
+    nobody: '—',
+    verdict_ok: 'тестовый звук — уровень хороший',
+    verdict_quiet: 'тестовый звук — тихо, сделайте громче',
+    verdict_silent: 'тестового звука нет',
+    verdict_clipping: 'слишком громко — перегруз',
+    tally_heard: (v) => `слышно ${v.heard} из ${v.total}`,
+    human_question: 'Слышна только эта колонка?',
+    human_ok: '✓ да',
+    human_wrong: '✗ нет, что-то другое',
+    human_thanks_ok: 'Отмечено: звучало правильно.',
+    human_thanks_wrong: 'Отмечено — этот запуск ничего не запишет.',
+    mic_test: 'Проверить микрофон',
+    mic_test_stop: 'Остановить проверку микрофона',
+    mic_test_note: 'Микрофон открыт. Включите что-нибудь и следите за уровнем: он должен двигаться, но не краснеть.',
+    refining: 'Доправляю оставшуюся разницу …',
+    measuring_attempt: (v) => `Измеряю (${v.attempt} из ${v.planned}) …`,
     ready_pill: 'готова',
     not_taking_part: 'не участвует',
     switch_off: 'выключить',
@@ -303,6 +343,129 @@ function setProgress(fraction) {
   el('bar').style.width = Math.max(0, Math.min(1, fraction)) * 100 + '%';
 }
 
+// --------------------------------------------------------------- live view
+
+// The level shown is the block's peak, held and let fall slowly, as on a
+// mixing desk: chirps are short, and a meter that followed every block would
+// flicker too fast to read.
+const METER_FLOOR_DB = -60;
+let heldPeakDb = METER_FLOOR_DB;
+let meterQueued = false;
+let latestBlock = null;
+
+function showLevel(block) {
+  latestBlock = block;
+  if (meterQueued) return;
+  meterQueued = true;
+  requestAnimationFrame(() => {
+    meterQueued = false;
+    const samples = latestBlock;
+    let peak = 0;
+    let sum = 0;
+    for (let i = 0; i < samples.length; i += 1) {
+      const v = Math.abs(samples[i]);
+      if (v > peak) peak = v;
+      sum += v * v;
+    }
+    const peakDb = peak > 0 ? 20 * Math.log10(peak) : METER_FLOOR_DB;
+    const rmsDb = sum > 0 ? 10 * Math.log10(sum / samples.length) : METER_FLOOR_DB;
+    heldPeakDb = Math.max(peakDb, heldPeakDb - 1.5);
+    const width = (db) => Math.max(0, Math.min(1, (db - METER_FLOOR_DB) / -METER_FLOOR_DB)) * 100;
+    const fill = el('meter-fill');
+    fill.style.width = width(rmsDb) + '%';
+    fill.className = heldPeakDb > -1 ? 'clip' : heldPeakDb < -45 ? 'quiet' : '';
+    el('meter-peak').style.left = width(heldPeakDb) + '%';
+    el('meter-text').textContent = `${Math.round(heldPeakDb)} dBFS`;
+  });
+}
+
+// Which speaker the server says should be sounding, and what the microphone
+// made of each round so far: the two side by side are what tells whether the
+// measurement is measuring what it claims to.
+let livePlaying = null;
+let tally = {};
+
+function showLive(visible) {
+  el('live').hidden = !visible;
+}
+
+function resetLive() {
+  livePlaying = null;
+  tally = {};
+  el('live-playing').textContent = t('nobody');
+  el('live-heard').textContent = '—';
+  el('live-heard').className = 'pill';
+  el('live-tally').innerHTML = '';
+  el('human').hidden = true;
+}
+
+function liveName(playerId) {
+  return playerId === '*' ? t('all_together') : nameOf(playerId);
+}
+
+function onRound(message) {
+  livePlaying = message.player_id;
+  el('live-playing').textContent = liveName(livePlaying);
+  // Asked again every round: the answer is about this speaker only.
+  el('human').hidden = false;
+  el('human-ok').disabled = false;
+  el('human-wrong').disabled = false;
+}
+
+function onLive(reading) {
+  const pill = el('live-heard');
+  pill.textContent = t('verdict_' + reading.verdict);
+  pill.className = 'pill ' + ({ ok: 'on', quiet: 'warn', silent: 'off', clipping: 'off' })[reading.verdict];
+  if (!livePlaying) return;
+  const entry = tally[livePlaying] || (tally[livePlaying] = { heard: 0, total: 0, worst: 'ok' });
+  entry.total += 1;
+  if (reading.heard) entry.heard += 1;
+  const rank = { ok: 0, quiet: 1, silent: 2, clipping: 3 };
+  if (reading.heard && rank[reading.verdict] > rank[entry.worst]) entry.worst = reading.verdict;
+  renderTally();
+}
+
+function renderTally() {
+  el('live-tally').innerHTML = '<tbody>' + Object.entries(tally).map(([pid, e]) => {
+    // The first window or two of a round still carry the previous speaker or
+    // the settling gap, so "most of them" is the bar, not "all".
+    const good = e.total && e.heard / e.total >= 0.5;
+    const kind = !good ? 'off' : e.worst === 'ok' ? 'on' : 'warn';
+    return `<tr><td style="text-align:left">${escapeHtml(liveName(pid))}</td>`
+      + `<td><span class="pill ${kind}">${t('tally_heard', e)}</span></td></tr>`;
+  }).join('') + '</tbody>';
+}
+
+function sendFeedback(ok) {
+  if (!livePlaying || !socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({ type: 'human_feedback', player_id: livePlaying, ok }));
+  el('human-ok').disabled = true;
+  el('human-wrong').disabled = true;
+  setStatus(t(ok ? 'human_thanks_ok' : 'human_thanks_wrong'), ok ? 'live' : 'err');
+}
+
+let micTesting = false;
+
+async function toggleMicTest() {
+  if (micTesting) {
+    micTesting = false;
+    el('mictest').textContent = t('mic_test');
+    if (!busy) showLive(false);
+    return;
+  }
+  try {
+    await openMicrophone();
+    if (audio.state === 'suspended') await audio.resume();
+    micTesting = true;
+    el('mictest').textContent = t('mic_test_stop');
+    resetLive();
+    showLive(true);
+    setStatus(t('mic_test_note'), 'live');
+  } catch (error) {
+    setStatus(t('no_microphone') + error.message, 'err');
+  }
+}
+
 // --------------------------------------------------------------- microphone
 
 async function openMicrophone() {
@@ -326,6 +489,7 @@ async function openMicrophone() {
 
   node = new AudioWorkletNode(audio, 'speaker-sync-recorder');
   node.port.onmessage = (event) => {
+    showLevel(event.data);
     if (recording && socket && socket.readyState === WebSocket.OPEN) {
       socket.send(event.data.buffer);
     }
@@ -361,10 +525,22 @@ function handle(message) {
     case 'record_start':
       recording = true;
       setStatus(t('recording'), 'live');
+      // The rate goes ahead of the audio so the server can judge each
+      // window as it arrives rather than only at the end.
+      socket.send(JSON.stringify({
+        type: 'recording_format',
+        sample_rate: audio ? audio.sampleRate : 48000,
+      }));
+      showLive(true);
+      break;
+
+    case 'live':
+      onLive(message);
       break;
 
     case 'record_stop':
       recording = false;
+      el('human').hidden = true;
       socket.send(JSON.stringify({
         type: 'recording_done',
         sample_rate: audio ? audio.sampleRate : 48000,
@@ -423,12 +599,28 @@ let passSpan = 1;
 
 function onProgress(message) {
   if (message.stage === 'pass') {
-    // Two passes either way: measure then prove, or one per track format.
-    const second = message.which === 'after' || message.rate === 48000;
-    passOffset = second ? 0.5 : 0;
-    passSpan = 0.5;
-    setStatus(t(message.which === 'after' ? 'verifying' : 'measuring'), 'live');
+    // A calibration measures `planned` times, then verifies; a check is one
+    // pass per track format. Extra passes (a speaker unheard, passes that
+    // disagree) and refinements reuse the last stretch of the bar.
+    const planned = (message.planned || 1) + 1;
+    if (message.which === 'before') {
+      const index = Math.min(message.attempt || 1, planned - 1) - 1;
+      passOffset = index / planned;
+      passSpan = 1 / planned;
+      setStatus(message.planned > 1
+        ? t('measuring_attempt', { attempt: message.attempt, planned: message.planned })
+        : t('measuring'), 'live');
+    } else if (message.which === 'check') {
+      passOffset = message.rate === 48000 ? 0.5 : 0;
+      passSpan = 0.5;
+      setStatus(t('measuring'), 'live');
+    } else {
+      passOffset = 1 - 1 / Math.max(planned, 2);
+      passSpan = 1 / Math.max(planned, 2);
+      setStatus(t(message.which === 'refine' ? 'refining' : 'verifying'), 'live');
+    }
   } else if (message.stage === 'round') {
+    onRound(message);
     setProgress(passOffset + passSpan * (message.round / message.rounds));
     setStatus(t('playing', {
       name: nameOf(message.player_id), round: message.round, rounds: message.rounds,
@@ -452,7 +644,7 @@ function chosenChirps() {
 function describeRoundLength() {
   const chirps = chosenChirps();
   const readings = chirps - session.guard_chirps;
-  const ready = players.filter((p) => p.calibratable).length;
+  const ready = players.filter((p) => p.measured).length;
 
   if (readings < 1) {
     el('chirps-note').textContent = t('guard_too_many', { guard: session.guard_chirps });
@@ -464,7 +656,8 @@ function describeRoundLength() {
   // with one more round at the end, every speaker at once.
   const rounds = ready ? ready + 1 : 0;
   const total = rounds * chirps;
-  const seconds = Math.round((2 * total + (rounds ? chirps : 0)) * session.period_seconds);
+  const passes = (session.measure_passes || 1) + 1;
+  const seconds = Math.round((passes * total + (rounds ? chirps : 0)) * session.period_seconds);
 
   let note = t('readings', { n: readings });
   if (rounds) {
@@ -812,6 +1005,7 @@ async function start(kind) {
   try {
     setBusy(true);
     setProgress(0);
+    resetLive();
     await openMicrophone();
     if (audio.state === 'suspended') await audio.resume();
     socket.send(JSON.stringify({ type: kind, chirps_per_round: chosenChirps() }));
@@ -835,6 +1029,9 @@ el('chirps').addEventListener('input', describeRoundLength);
 el('run').addEventListener('click', () => start('calibrate'));
 el('check').addEventListener('click', () => start('check'));
 el('listen').addEventListener('click', listen);
+el('mictest').addEventListener('click', toggleMicTest);
+el('human-ok').addEventListener('click', () => sendFeedback(true));
+el('human-wrong').addEventListener('click', () => sendFeedback(false));
 el('save').addEventListener('click', saveProfile);
 el('refresh').addEventListener('click', refreshPlayers);
 
