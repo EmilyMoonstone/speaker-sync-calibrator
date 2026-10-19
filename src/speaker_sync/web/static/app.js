@@ -56,6 +56,7 @@ const STRINGS = {
       + ' ringing click: a few ms apart. A double “tr-ack”: more than ~10 ms, calibrate.',
     listening: 'Clicks are playing on every speaker. One sharp click means in sync;'
       + ' a double click means they are apart.',
+    listening_done: 'Listening test over; the speakers are back as they were.',
     check_result: 'Check',
     offset_from_first: 'after the earliest',
     in_sync: 'In sync: the corrections hold, in both formats and with every speaker playing.',
@@ -155,6 +156,7 @@ const STRINGS = {
       + ' ~10 мс, нужна калибровка.',
     listening: 'Щелчки играют на всех колонках. Один чёткий щелчок — синхронно;'
       + ' двойной — колонки расходятся.',
+    listening_done: 'Проверка на слух закончена; колонки вернулись в прежнее состояние.',
     check_result: 'Проверка',
     offset_from_first: 'после самой ранней',
     in_sync: 'Синхронно: поправки держатся — в обоих форматах и когда играют все сразу.',
@@ -367,7 +369,17 @@ function handle(message) {
       break;
 
     case 'listening':
-      setStatus(t('listening'), 'ok');
+      // Still busy: the group is held until the track ends.
+      setStatus(t('listening'), 'live');
+      break;
+
+    case 'listening_done':
+      setStatus(
+        message.problems && message.problems.length
+          ? t('error') + message.problems.join(' ')
+          : t('listening_done'),
+        message.problems && message.problems.length ? 'err' : 'ok',
+      );
       setBusy(false);
       break;
 

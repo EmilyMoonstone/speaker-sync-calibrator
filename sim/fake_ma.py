@@ -105,7 +105,16 @@ class FakeMusicAssistant:
     nothing rather than treating silence as a refusal.
     """
 
-    _group: list[str] = field(default_factory=list, init=False)
+    groups: dict[str, list[str]] = field(default_factory=dict)
+    """Who leads which group: leader id to its members, the leader first.
+
+    Public so a test can start from a system that was already grouped before
+    the session, which is what the session has to put back afterwards.
+    """
+
+    volumes: dict[str, int] = field(default_factory=dict)
+    """Each speaker's volume, 50 unless set."""
+
     writes: list[tuple[str, int]] = field(default_factory=list, init=False)
     """Every ``sync_adjust`` write, in order — asserted on by tests."""
 
@@ -131,19 +140,34 @@ class FakeMusicAssistant:
                 provider=self.provider,
                 available=True,
                 muted=self._reported_mute(s.player_id) if self.report_mute_state else None,
+                volume_level=self.volumes.get(s.player_id, 50),
                 sync_adjust_ms=s.sync_adjust_ms,
                 sync_adjust_key=self.delay_key,
                 delay_range_ms=self.delay_range_ms,
-                # Only the leader carries the membership, which is how Music
-                # Assistant reports a sync group.
+                # The leader carries the membership and each member names its
+                # leader, which is how Music Assistant reports a sync group.
                 group_members=(
-                    tuple(self._group)
-                    if self.report_group_state and self._group and s.player_id == self._group[0]
-                    else ()
+                    tuple(self.groups.get(s.player_id, ())) if self.report_group_state else ()
                 ),
+                synced_to=self.synced_to(s.player_id) if self.report_group_state else None,
             )
             for s in self.speakers
         ] + list(self.extra_players)
+
+    def synced_to(self, player_id: str) -> str | None:
+        """The leader this speaker follows, or ``None``."""
+        return next(
+            (
+                leader
+                for leader, members in self.groups.items()
+                if player_id in members and player_id != leader
+            ),
+            None,
+        )
+
+    def is_grouped(self, player_id: str) -> bool:
+        """Whether the speaker is part of any group, as leader or member."""
+        return any(player_id in members for members in self.groups.values())
 
     async def set_sync_adjust(self, player_id: str, milliseconds: int) -> None:
         if self.delay_range_ms is not None:
@@ -181,12 +205,34 @@ class FakeMusicAssistant:
         return self._muted_now.get(player_id, False)
 
     async def set_group(self, leader_id: str, member_ids: list[str]) -> None:
+        self.log.append(("group", leader_id, tuple(member_ids)))
         # A refusal is silent, exactly as it is on real hardware: the command
         # succeeds and the speaker simply is not in the group afterwards.
-        self._group = [
-            leader_id,
-            *[m for m in member_ids if m != leader_id and m not in self.ungroupable],
-        ]
+        joining = [m for m in member_ids if m != leader_id and m not in self.ungroupable]
+        # A speaker belongs to one group at a time; joining this one takes it
+        # out of whichever it was in.
+        for member in [leader_id, *joining]:
+            self._leave(member, keep_leading=member == leader_id)
+        current = self.groups.get(leader_id, [leader_id])
+        self.groups[leader_id] = [*current, *[m for m in joining if m not in current]]
+
+    async def ungroup(self, player_id: str) -> None:
+        self.log.append(("ungroup", player_id))
+        self._leave(player_id)
+
+    async def set_volume(self, player_id: str, volume_level: int) -> None:
+        self.log.append(("volume", player_id, volume_level))
+        self.volumes[player_id] = volume_level
+
+    def _leave(self, player_id: str, *, keep_leading: bool = False) -> None:
+        """Take a speaker out of its group; a leader leaving dissolves it."""
+        if player_id in self.groups and not keep_leading:
+            del self.groups[player_id]
+        for leader, members in list(self.groups.items()):
+            if leader != player_id and player_id in members:
+                members.remove(player_id)
+            if len(self.groups.get(leader, ())) <= 1:
+                self.groups.pop(leader, None)
 
     async def play_url(self, player_id: str, url: str) -> None:
         self.log.append(("play", player_id))

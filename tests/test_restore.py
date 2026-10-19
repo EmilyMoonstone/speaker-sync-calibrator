@@ -1,0 +1,155 @@
+"""A session leaves the speakers the way it found them.
+
+The measurement groups every speaker under one leader, and Music Assistant
+keeps that group after the track stops. Left behind, a speaker stays synced to
+the session's leader and cannot join anything else — playing a sync group that
+contains it then fails with "can not be grouped with". These tests pin down
+that the grouping, mute and volume come back however the session ends: done,
+failed, or cancelled because the browser holding the microphone went away.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from sim.fake_ma import SimulatedRecorder
+from speaker_sync.calibration.session import (
+    PlayerStateSnapshot,
+    calibrate,
+    check_alignment,
+)
+from speaker_sync.calibration.validate import determine_sign
+from tests.test_end_to_end import make_server
+
+
+def grouped(server) -> set[str]:
+    return {s.player_id for s in server.speakers if server.is_grouped(s.player_id)}
+
+
+async def test_a_calibration_leaves_no_group_behind():
+    server, recorder, clock = make_server(snr_db=30.0)
+
+    report = await calibrate(server, recorder, sleep=clock.sleep)
+
+    assert report.spread_after_ms is not None and report.spread_after_ms < 2.0
+    assert grouped(server) == set()
+    assert all(p.synced_to is None for p in await server.list_players())
+    # The session did group them, and then took the group apart again.
+    assert any(entry[0] == "group" for entry in server.log)
+    assert any(entry[0] == "ungroup" for entry in server.log)
+
+
+async def test_a_check_and_a_sign_probe_leave_no_group_behind():
+    server, recorder, clock = make_server(snr_db=30.0)
+
+    await check_alignment(server, recorder, sleep=clock.sleep)
+    assert grouped(server) == set()
+
+    await determine_sign(server, recorder, sleep=clock.sleep)
+    assert grouped(server) == set()
+
+
+class FailingRecorder(SimulatedRecorder):
+    """The browser stops answering when the recording should be handed over."""
+
+    async def stop(self):
+        raise RuntimeError("the browser did not finish uploading the recording")
+
+
+async def test_a_failed_calibration_still_takes_the_group_apart():
+    server, _, clock = make_server(snr_db=30.0)
+
+    with pytest.raises(RuntimeError, match="browser"):
+        await calibrate(server, FailingRecorder(server), sleep=clock.sleep)
+
+    assert grouped(server) == set()
+    # Nobody is left muted mid-track either.
+    assert not any(p.muted for p in await server.list_players())
+
+
+async def test_a_cancelled_calibration_still_takes_the_group_apart():
+    """Closing the browser cancels the running job; the finally has to hold."""
+    server, recorder, _ = make_server(snr_db=30.0)
+    started = asyncio.Event()
+
+    async def slow_sleep(seconds: float) -> None:
+        # Real time stands still until the test cancels: the session is
+        # parked in the middle of its first round.
+        started.set()
+        await asyncio.Event().wait()
+
+    job = asyncio.create_task(calibrate(server, recorder, sleep=slow_sleep))
+    await started.wait()
+    assert grouped(server)  # mid-run, the measurement group exists
+
+    job.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await job
+
+    assert grouped(server) == set()
+    assert not any(p.muted for p in await server.list_players())
+
+
+async def test_a_group_that_existed_before_is_put_back():
+    """Two speakers that were playing together before stay together after."""
+    server, recorder, clock = make_server(snr_db=30.0)
+    await server.set_group("avr", ["avr", "bt"])
+
+    await calibrate(server, recorder, sleep=clock.sleep)
+
+    assert server.groups == {"avr": ["avr", "bt"]}
+    assert server.synced_to("bt") == "avr"
+    assert server.synced_to("esp32") is None
+
+
+async def test_mute_and_volume_come_back_as_they_were():
+    server, recorder, clock = make_server(snr_db=30.0)
+    await server.set_muted("bt", True)
+    server.volumes["esp32"] = 23
+
+    await calibrate(server, recorder, sleep=clock.sleep)
+    # Something along the way moved a volume, as a group volume change would.
+    server.volumes["avr"] = 80
+    await check_alignment(server, recorder, sleep=clock.sleep)
+
+    players = {p.player_id: p for p in await server.list_players()}
+    assert players["bt"].muted is True
+    assert players["esp32"].muted is False
+    assert players["esp32"].volume_level == 23
+    # Restored to what it was when *that* session began.
+    assert players["avr"].volume_level == 80
+
+
+async def test_restoring_carries_on_past_a_command_that_fails():
+    """One refused ungroup must not leave the rest of the speakers grouped."""
+    server, recorder, clock = make_server(snr_db=30.0)
+    snapshot = await PlayerStateSnapshot.take(server, ["esp32", "avr", "bt"])
+    await server.set_group("esp32", ["esp32", "avr", "bt"])
+
+    real_ungroup = server.ungroup
+
+    async def refusing_ungroup(player_id: str) -> None:
+        if player_id == "avr":
+            raise RuntimeError("player is busy")
+        await real_ungroup(player_id)
+
+    server.ungroup = refusing_ungroup
+
+    problems = await snapshot.restore(server)
+
+    assert server.synced_to("bt") is None
+    assert server.synced_to("avr") == "esp32"
+    assert len(problems) == 1 and "busy" in problems[0]
+
+
+async def test_players_outside_the_session_are_left_alone():
+    """A group the user formed elsewhere in the meantime is none of our business."""
+    server, recorder, clock = make_server(snr_db=30.0)
+    snapshot = await PlayerStateSnapshot.take(server, ["esp32"])
+    await server.set_group("avr", ["avr", "bt"])
+
+    await snapshot.restore(server)
+
+    assert server.groups == {"avr": ["avr", "bt"]}

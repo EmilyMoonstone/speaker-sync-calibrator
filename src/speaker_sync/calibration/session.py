@@ -15,7 +15,9 @@ report and worse sound than before.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+import contextlib
+import logging
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
@@ -46,6 +48,8 @@ from speaker_sync.dsp.signals import (
 )
 from speaker_sync.i18n import say
 from speaker_sync.ma.backend import PlayerInfo, SpeakerBackend
+
+logger = logging.getLogger("speaker_sync.session")
 
 Sleeper = Callable[[float], Awaitable[None]]
 
@@ -260,10 +264,21 @@ async def measure_once(
                 round_seconds += cfg.settle_seconds
             await sleep(round_seconds)
     finally:
-        await backend.stop(leader)
-        recording, sample_rate = await recorder.stop()
+        # Each step on its own: a recorder that is gone — the browser was
+        # closed — must not leave every speaker stopped mid-track and muted.
+        # The recorder's own failure still ends the pass, after the rest.
+        recorder_error: BaseException | None = None
+        with contextlib.suppress(Exception):
+            await backend.stop(leader)
+        try:
+            recording, sample_rate = await recorder.stop()
+        except Exception as error:  # noqa: BLE001 - re-raised below
+            recorder_error = error
         for player_id in player_ids:
-            await backend.set_muted(player_id, False)
+            with contextlib.suppress(Exception):
+                await backend.set_muted(player_id, False)
+        if recorder_error is not None:
+            raise recorder_error
 
     _report(progress, stage="analyzing")
 
@@ -580,6 +595,184 @@ def _check_the_rounds_isolated(
     ]
 
 
+# ------------------------------------------------------------ player state
+
+
+@dataclass(frozen=True)
+class PlayerState:
+    """What a session may change about a player, as it stood beforehand."""
+
+    synced_to: str | None
+    group_members: tuple[str, ...]
+    muted: bool | None
+    volume_level: int | None
+
+
+@dataclass(frozen=True)
+class PlayerStateSnapshot:
+    """The players' grouping, mute and volume from before a session.
+
+    A measurement has to put every speaker into one group to give the rounds
+    a common stream, and Music Assistant keeps that group after the track has
+    stopped. Left behind, it is not harmless: a speaker still synced to the
+    session's leader cannot join anything else, and playing a sync group that
+    contains it then fails outright ("can not be grouped with"). So the state
+    is taken before anything is touched and put back afterwards — on success,
+    on failure, and when the run is cancelled because the browser went away.
+    """
+
+    states: dict[str, PlayerState]
+    involved: frozenset[str]
+    """The players the session works with. Restoring is limited to them and to
+    whatever they were or are grouped with, so a change made elsewhere in the
+    meantime is left alone."""
+
+    @classmethod
+    async def take(
+        cls, backend: SpeakerBackend, involved: Iterable[str] | None = None
+    ) -> "PlayerStateSnapshot":
+        players = await backend.list_players()
+        states = {
+            p.player_id: PlayerState(
+                synced_to=p.synced_to,
+                group_members=tuple(p.group_members),
+                muted=p.muted,
+                volume_level=p.volume_level,
+            )
+            for p in players
+        }
+        return cls(states, frozenset(states if involved is None else involved))
+
+    def _scope(self, now: dict[str, PlayerInfo]) -> set[str]:
+        """The involved players plus anything linked to them, then or now."""
+        scope = set(self.involved)
+        for player_id in {*now, *self.states}:
+            linked: set[str] = set()
+            for state in (self.states.get(player_id), now.get(player_id)):
+                if state is not None:
+                    linked.update(state.group_members)
+                    if state.synced_to:
+                        linked.add(state.synced_to)
+            if linked & self.involved:
+                scope.add(player_id)
+        return scope
+
+    async def restore(self, backend: SpeakerBackend) -> list[str]:
+        """Put grouping, mute and volume back; return what could not be.
+
+        Every step is attempted regardless of the others, because the worst
+        outcome is the one this exists to prevent: a speaker left stuck in the
+        session's group. A failed step is reported, never raised.
+        """
+        problems: list[str] = []
+
+        async def attempt(what: str, step: Awaitable[None]) -> None:
+            try:
+                await step
+            except Exception as error:  # noqa: BLE001 - reported, not raised
+                logger.warning("could not restore %s: %s", what, error)
+                problems.append(
+                    say(
+                        en=f"could not put back {what}: {error}",
+                        ru=f"не удалось вернуть {what}: {error}",
+                    )
+                )
+
+        try:
+            now = {p.player_id: p for p in await backend.list_players()}
+        except Exception as error:  # noqa: BLE001
+            logger.warning("could not read the players to restore them: %s", error)
+            return [
+                say(
+                    en=f"could not read the speakers to restore their grouping: {error}",
+                    ru=f"не удалось прочитать колонки, чтобы вернуть группировку: {error}",
+                )
+            ]
+        scope = self._scope(now)
+
+        # 1. Release every player that is grouped now in a way it was not
+        #    before: a member following a new leader, or a leader holding
+        #    members it did not have.
+        release: list[str] = []
+        for player_id in sorted(scope):
+            current, before = now.get(player_id), self.states.get(player_id)
+            if current is None:
+                continue
+            was_synced_to = before.synced_to if before else None
+            if current.synced_to and current.synced_to != was_synced_to:
+                release.append(player_id)
+            had = set(before.group_members) if before else set()
+            release.extend(
+                m for m in current.group_members if m != player_id and m not in had
+            )
+        for player_id in dict.fromkeys(release):
+            name = now[player_id].name if player_id in now else player_id
+            await attempt(
+                say(en=f"«{name}» to its own group", ru=f"«{name}» в свою группу"),
+                backend.ungroup(player_id),
+            )
+
+        # 2. Rebuild a group that the session took players out of.
+        if release:
+            with contextlib.suppress(Exception):
+                now = {p.player_id: p for p in await backend.list_players()}
+        for player_id in sorted(scope):
+            before, current = self.states.get(player_id), now.get(player_id)
+            if before is None or current is None or before.synced_to:
+                continue
+            members = [m for m in before.group_members if m != player_id]
+            missing = [
+                m
+                for m in members
+                if m not in current.group_members and m in now and now[m].available
+            ]
+            if missing:
+                await attempt(
+                    say(
+                        en=f"the group of «{current.name}»",
+                        ru=f"группу «{current.name}»",
+                    ),
+                    backend.set_group(player_id, [player_id, *members]),
+                )
+
+        # 3. Mute and volume, for the players the session itself handled.
+        for player_id in sorted(self.involved):
+            before, current = self.states.get(player_id), now.get(player_id)
+            if before is None or current is None:
+                continue
+            if before.muted is not None and current.muted is not None and (
+                current.muted != before.muted
+            ):
+                await attempt(
+                    say(en=f"the mute of «{current.name}»", ru=f"заглушение «{current.name}»"),
+                    backend.set_muted(player_id, before.muted),
+                )
+            if before.volume_level is not None and current.volume_level != before.volume_level:
+                await attempt(
+                    say(en=f"the volume of «{current.name}»", ru=f"громкость «{current.name}»"),
+                    backend.set_volume(player_id, before.volume_level),
+                )
+
+        return problems
+
+
+@contextlib.asynccontextmanager
+async def preserved_player_state(backend: SpeakerBackend, involved: Iterable[str]):
+    """Run a block of session work and restore the players afterwards, always.
+
+    Yields a list that receives whatever could not be restored, so the caller
+    can report it alongside the session's own findings.
+    """
+    snapshot = await PlayerStateSnapshot.take(backend, involved)
+    problems: list[str] = []
+    try:
+        yield problems
+    finally:
+        # Shielded: a cancellation arriving while the players are being put
+        # back must not stop half way and leave a group behind.
+        problems.extend(await asyncio.shield(snapshot.restore(backend)))
+
+
 async def calibrate(
     backend: SpeakerBackend,
     recorder: Recorder,
@@ -592,7 +785,41 @@ async def calibrate(
     sleep: Sleeper = asyncio.sleep,
     progress: ProgressCallback | None = None,
 ) -> CalibrationReport:
-    """Measure, correct, and then prove the correction worked."""
+    """Measure, correct, and then prove the correction worked.
+
+    However it ends, the speakers are left grouped, muted and at the volume
+    they were found in — see :class:`PlayerStateSnapshot`.
+    """
+    involved = [p.player_id for p in await backend.list_players() if p.is_calibratable]
+    async with preserved_player_state(backend, involved) as restore_problems:
+        report = await _calibrate(
+            backend,
+            recorder,
+            reference_id=reference_id,
+            config=config,
+            signal_url=signal_url,
+            sign=sign,
+            verify=verify,
+            sleep=sleep,
+            progress=progress,
+        )
+    if restore_problems:
+        report = replace(report, problems=(*report.problems, *restore_problems))
+    return report
+
+
+async def _calibrate(
+    backend: SpeakerBackend,
+    recorder: Recorder,
+    *,
+    reference_id: str | None,
+    config: SessionConfig | None,
+    signal_url,
+    sign: int,
+    verify: bool,
+    sleep: Sleeper,
+    progress: ProgressCallback | None,
+) -> CalibrationReport:
     cfg = config or SessionConfig()
     players = [p for p in await backend.list_players() if p.is_calibratable]
     if len(players) < 2:
@@ -797,22 +1024,24 @@ async def check_alignment(
 
     passes: dict[int, MeasurementPass] = {}
     problems: list[str] = []
-    for rate in sample_rates:
-        _report(progress, stage="pass", which="check", rate=rate, players=len(players))
-        pass_ = await measure_once(
-            backend,
-            recorder,
-            players,
-            config=replace(cfg, track_sample_rate=rate),
-            signal_url=signal_url,
-            sleep=sleep,
-            progress=progress,
-            together=True,
-        )
-        passes[rate] = pass_
-        problems.extend(pass_.analysis.problems)
-        if pass_.together is not None:
-            problems.extend(pass_.together.problems)
+    async with preserved_player_state(backend, [p.player_id for p in players]) as restore_problems:
+        for rate in sample_rates:
+            _report(progress, stage="pass", which="check", rate=rate, players=len(players))
+            pass_ = await measure_once(
+                backend,
+                recorder,
+                players,
+                config=replace(cfg, track_sample_rate=rate),
+                signal_url=signal_url,
+                sleep=sleep,
+                progress=progress,
+                together=True,
+            )
+            passes[rate] = pass_
+            problems.extend(pass_.analysis.problems)
+            if pass_.together is not None:
+                problems.extend(pass_.together.problems)
+    problems.extend(restore_problems)
 
     names = {p.player_id: p.name for p in players}
     check = AlignmentCheck(passes=passes, names=names)
@@ -862,13 +1091,20 @@ async def play_listening_test(
     backend: SpeakerBackend,
     url: str,
     *,
+    hold_seconds: float,
     sleep: Sleeper = asyncio.sleep,
-) -> list[PlayerInfo]:
+    on_playing: Callable[[list[PlayerInfo]], None] | None = None,
+) -> list[str]:
     """Play the click track on every speaker at once, for judging by ear.
 
     Nothing is recorded: the listener is the instrument. The speakers are
     grouped and unmuted exactly as for a measurement, so what is heard is what
     the calibration aligned.
+
+    The group is held for ``hold_seconds`` — the length of the track — and
+    then taken apart again, so the test does not leave its group behind any
+    more than a measurement does. ``on_playing`` is told once it is audible.
+    Returns whatever could not be restored.
     """
     players = [p for p in await backend.list_players() if p.is_calibratable]
     if len(players) < 2:
@@ -878,6 +1114,25 @@ async def play_listening_test(
                 ru="для сравнения нужно хотя бы две колонки",
             )
         )
+    async with preserved_player_state(backend, [p.player_id for p in players]) as problems:
+        await _start_listening_test(backend, url, players, sleep=sleep)
+        if on_playing is not None:
+            on_playing(players)
+        try:
+            await sleep(hold_seconds)
+        finally:
+            with contextlib.suppress(Exception):
+                await backend.stop(players[0].player_id)
+    return problems
+
+
+async def _start_listening_test(
+    backend: SpeakerBackend,
+    url: str,
+    players: list[PlayerInfo],
+    *,
+    sleep: Sleeper,
+) -> None:
     player_ids = [p.player_id for p in players]
     leader = player_ids[0]
     await backend.set_group(leader, player_ids)
@@ -885,4 +1140,3 @@ async def play_listening_test(
     for player_id in player_ids:
         await backend.set_muted(player_id, False)
     await backend.play_url(leader, url)
-    return players

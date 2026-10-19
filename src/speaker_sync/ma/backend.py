@@ -160,6 +160,16 @@ class PlayerInfo:
     a speaker that cannot join the group hears nothing and measures as silence.
     """
 
+    synced_to: str | None = None
+    """The leader this player is synced to, when it is a member of a group.
+
+    The other half of :attr:`group_members`: a member reports its leader here,
+    which is how a group left behind after a session is recognised and undone.
+    """
+
+    active_group: str | None = None
+    """The group player (a sync group, say) this player is playing in, if any."""
+
     user_enabled: bool = True
     """The manual switch: whether the user wants this speaker taken part in.
 
@@ -328,6 +338,12 @@ class SelectedSpeakers:
     async def set_group(self, leader_id: str, member_ids: list[str]) -> None:
         await self.inner.set_group(leader_id, member_ids)
 
+    async def ungroup(self, player_id: str) -> None:
+        await self.inner.ungroup(player_id)
+
+    async def set_volume(self, player_id: str, volume_level: int) -> None:
+        await self.inner.set_volume(player_id, volume_level)
+
     async def play_url(self, player_id: str, url: str) -> None:
         await self.inner.play_url(player_id, url)
 
@@ -348,6 +364,11 @@ class SpeakerBackend(Protocol):
         """Mute or unmute. Must take effect without reloading the player."""
 
     async def set_group(self, leader_id: str, member_ids: list[str]) -> None: ...
+
+    async def ungroup(self, player_id: str) -> None:
+        """Take the player out of whatever group it is in."""
+
+    async def set_volume(self, player_id: str, volume_level: int) -> None: ...
 
     async def play_url(self, player_id: str, url: str) -> None: ...
 

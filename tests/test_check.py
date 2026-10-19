@@ -79,12 +79,38 @@ async def test_calibration_plays_the_track_in_the_format_music_uses():
 async def test_the_listening_test_plays_on_every_speaker_at_once():
     server, recorder, clock = make_server(snr_db=30.0)
     await server.set_muted("avr", True)
+    during = {}
 
-    players = await play_listening_test(server, "http://x/listen.wav", sleep=clock.sleep)
+    def heard(players):
+        # Read straight off the room: this is the moment the listener hears it.
+        during["players"] = players
+        during["muted"] = {s.player_id: server._reported_mute(s.player_id) for s in server.speakers}
 
-    assert {p.player_id for p in players} == {s.player_id for s in server.speakers}
+    await play_listening_test(
+        server, "http://x/listen.wav", hold_seconds=21.0, sleep=clock.sleep, on_playing=heard
+    )
+
+    assert {p.player_id for p in during["players"]} == {s.player_id for s in server.speakers}
     assert server.played_urls == ["http://x/listen.wav"]
-    assert not any(p.muted for p in await server.list_players())
+    assert not any(during["muted"].values())
+
+
+async def test_the_listening_test_leaves_no_group_and_restores_mute():
+    server, recorder, clock = make_server(snr_db=30.0)
+    await server.set_muted("avr", True)
+
+    problems = await play_listening_test(
+        server, "http://x/listen.wav", hold_seconds=21.0, sleep=clock.sleep
+    )
+
+    assert problems == []
+    assert clock.now >= 21.0
+    assert not any(server.is_grouped(s.player_id) for s in server.speakers)
+    assert {p.player_id: p.muted for p in await server.list_players()} == {
+        "esp32": False,
+        "avr": True,
+        "bt": False,
+    }
 
 
 async def test_a_check_is_described_for_the_page():

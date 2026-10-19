@@ -233,6 +233,8 @@ class MusicAssistantBackend:
                     active_output_protocol=_active_protocol_domain(player),
                     group_members=tuple(getattr(player, "group_members", ()) or ()),
                     can_group_with=tuple(getattr(player, "can_group_with", ()) or ()),
+                    synced_to=getattr(player, "synced_to", None) or None,
+                    active_group=getattr(player, "active_group", None) or None,
                     sync_adjust_ms=_current_value(delay),
                     sync_adjust_key=delay.key if delay is not None else None,
                     delay_protocol=_delay_protocol(player, delay),
@@ -302,6 +304,12 @@ class MusicAssistantBackend:
         await self._client.players.group_many(
             leader_id, [m for m in member_ids if m != leader_id]
         )
+
+    async def ungroup(self, player_id: str) -> None:
+        await self._client.players.ungroup(player_id)
+
+    async def set_volume(self, player_id: str, volume_level: int) -> None:
+        await self._client.players.volume_set(player_id, int(volume_level))
 
     async def play_url(self, player_id: str, url: str) -> None:
         # Ordinary queue playback, which is what carries the stream to the

@@ -21,6 +21,7 @@ from speaker_sync.calibration.session import (
     SessionConfig,
     Sleeper,
     measure_once,
+    preserved_player_state,
 )
 from speaker_sync.calibration.solver import SYNC_ADJUST_LIMIT_MS
 from speaker_sync.i18n import say
@@ -58,7 +59,34 @@ async def determine_sign(
     signal_url: str = "",
     sleep: Sleeper = asyncio.sleep,
 ) -> SignCheck:
-    """Probe the server's convention and restore what was there before."""
+    """Probe the server's convention and restore what was there before.
+
+    That covers the probed delay and, like every session, the grouping, mute
+    and volume the measurement passes changed.
+    """
+    involved = [p.player_id for p in await backend.list_players() if p.is_calibratable]
+    async with preserved_player_state(backend, involved):
+        return await _determine_sign(
+            backend,
+            recorder,
+            reference_id=reference_id,
+            probe_ms=probe_ms,
+            config=config,
+            signal_url=signal_url,
+            sleep=sleep,
+        )
+
+
+async def _determine_sign(
+    backend: SpeakerBackend,
+    recorder: Recorder,
+    *,
+    reference_id: str | None,
+    probe_ms: int,
+    config: SessionConfig | None,
+    signal_url: str,
+    sleep: Sleeper,
+) -> SignCheck:
     cfg = config or SessionConfig()
     players = [p for p in await backend.list_players() if p.is_calibratable]
     if len(players) < 2:

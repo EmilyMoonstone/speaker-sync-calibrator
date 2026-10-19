@@ -90,6 +90,16 @@ def click_track_wav() -> bytes:
     track = build_click_track()
     return to_wav_bytes(track, DEFAULT_SAMPLE_RATE)
 
+
+LISTEN_START_SECONDS = 3.0
+"""Allowance for the stream to start before the click track's own length."""
+
+
+@lru_cache(maxsize=1)
+def listening_test_seconds() -> float:
+    """How long the listening test holds its group before taking it apart."""
+    return len(build_click_track()) / DEFAULT_SAMPLE_RATE + LISTEN_START_SECONDS
+
 # Audio is uploaded as it is recorded, so by the time recording stops most of
 # it has already arrived and this covers only the tail. It still scales with
 # the recording, because a phone reaching the app through a tunnel uploads at
@@ -759,8 +769,15 @@ async def _run_job(
         # One view of the speakers for the whole job, switches already applied.
         speakers = state.speakers
         if kind == "listen":
-            await play_listening_test(speakers, state.listen_url)
-            outbox.put_nowait({"type": "listening"})
+            # Held until the track is over, then the group is taken apart
+            # again — the page stays busy meanwhile.
+            problems = await play_listening_test(
+                speakers,
+                state.listen_url,
+                hold_seconds=listening_test_seconds(),
+                on_playing=lambda _: outbox.put_nowait({"type": "listening"}),
+            )
+            outbox.put_nowait({"type": "listening_done", "problems": problems})
             return
 
         if kind == "check":

@@ -45,6 +45,7 @@ class FakePlayer:
     type: str = "player"
     output_protocols: tuple = ()
     active_output_protocol: object = None
+    synced_to: str | None = None
 
 
 @dataclass
@@ -97,6 +98,12 @@ class FakePlayers:
 
     async def group_many(self, target_player, child_player_ids):
         self.calls.append(("group_many", target_player, tuple(child_player_ids)))
+
+    async def ungroup(self, player_id):
+        self.calls.append(("ungroup", player_id))
+
+    async def volume_set(self, player_id, volume_level):
+        self.calls.append(("volume_set", player_id, volume_level))
 
     async def play_announcement(self, player_id, url, pre_announce=None, **kwargs):
         self.calls.append(("play_announcement", player_id, url, pre_announce))
@@ -720,3 +727,22 @@ async def test_close_stops_the_listener(monkeypatch):
     await adapter.close()
 
     assert adapter._listener.done()
+
+
+async def test_grouping_state_and_its_undoing_go_through_the_library():
+    """What a session needs to put a speaker back: who it follows, and the
+    commands to release it and to reset its volume."""
+    client = FakeClient(
+        [FakePlayer("esp32", "Кухня"), FakePlayer("bt", "Спальня", synced_to="esp32")],
+        entries={"esp32": [delay_entry()], "bt": [delay_entry()]},
+    )
+    adapter = MusicAssistantBackend(client)
+
+    players = {p.player_id: p for p in await adapter.list_players()}
+    await adapter.ungroup("bt")
+    await adapter.set_volume("esp32", 35)
+
+    assert players["bt"].synced_to == "esp32"
+    assert players["esp32"].synced_to is None
+    assert ("ungroup", "bt") in client.players.calls
+    assert ("volume_set", "esp32", 35) in client.players.calls
