@@ -46,6 +46,7 @@ class FakePlayer:
     output_protocols: tuple = ()
     active_output_protocol: object = None
     synced_to: str | None = None
+    supported_features: tuple = ()
 
 
 @dataclass
@@ -454,8 +455,47 @@ async def test_a_player_with_no_delay_setting_reports_what_it_does_have():
     (player,) = await MusicAssistantBackend(client).list_players()
 
     assert not player.is_calibratable
-    assert player.exclusion_reason == "no delay setting"
     assert player.config_keys == ("volume", "crossfade")
+    # Not written to, but still measured: a fixed point for the others.
+    assert player.is_reference
+    assert player.exclusion_reason is None
+
+
+async def test_a_player_without_a_delay_that_cannot_be_muted_sits_out():
+    """A reference has to fall silent in the others' rounds, or every round
+    measures it."""
+    client = FakeClient(
+        [FakePlayer("odd", "Странная", supported_features=("volume_set",))],
+        entries={"odd": [FakeEntry("volume")]},
+    )
+
+    (player,) = await MusicAssistantBackend(client).list_players()
+
+    assert player.can_mute is False
+    assert not player.is_measurable
+    assert player.exclusion_reason == "no delay setting, and it cannot be muted"
+
+
+async def test_a_mutable_player_without_a_delay_is_a_reference():
+    """MassDroid: compensates its own output latency and offers the server no
+    delay, but mutes and groups like any Sendspin player."""
+    client = FakeClient(
+        [
+            FakePlayer(
+                "pixel",
+                "Pixel9",
+                provider="sendspin",
+                supported_features=("volume_mute", "set_members", "volume_set"),
+            )
+        ],
+        entries={"pixel": [FakeEntry("preferred_sendspin_format", type="string")]},
+    )
+
+    (player,) = await MusicAssistantBackend(client).list_players()
+
+    assert player.can_mute is True
+    assert player.is_reference
+    assert not player.is_calibratable
 
 
 async def test_one_unreadable_entry_does_not_cost_the_speaker_its_settings():

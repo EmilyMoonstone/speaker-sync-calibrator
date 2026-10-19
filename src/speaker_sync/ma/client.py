@@ -235,6 +235,7 @@ class MusicAssistantBackend:
                     can_group_with=tuple(getattr(player, "can_group_with", ()) or ()),
                     synced_to=getattr(player, "synced_to", None) or None,
                     active_group=getattr(player, "active_group", None) or None,
+                    can_mute=_supports(player, "volume_mute"),
                     sync_adjust_ms=_current_value(delay),
                     sync_adjust_key=delay.key if delay is not None else None,
                     delay_protocol=_delay_protocol(player, delay),
@@ -539,6 +540,14 @@ def _protocol_domain(protocol) -> str | None:
         return None
     domain = getattr(protocol, "protocol_domain", None)
     return str(domain) if domain else _type_name(protocol)
+
+
+def _supports(player, feature: str) -> bool | None:
+    """Whether the player lists ``feature``; ``None`` when it lists nothing."""
+    features = getattr(player, "supported_features", None)
+    if not features:
+        return None
+    return feature in {_type_name(f) for f in features}
 
 
 def _type_name(player_type) -> str:

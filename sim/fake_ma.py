@@ -63,6 +63,7 @@ class FakeMusicAssistant:
     _commanded_mute: dict[str, bool] = field(default_factory=dict, init=False)
     _playback_started: float | None = field(default=None, init=False)
     _playing: bool = field(default=False, init=False)
+    _stream_to: set[str] = field(default_factory=set, init=False)
     ungroupable: set[str] = field(default_factory=set)
     """Speakers Music Assistant will not put in a group, by player id.
 
@@ -92,6 +93,11 @@ class FakeMusicAssistant:
     player instead carries ``static_delay_ms`` at ``(0, 5000)``: advance-only,
     and the server rejects anything outside it rather than clamping.
     """
+
+    no_delay: set[str] = field(default_factory=set)
+    """Speakers that offer no delay setting at all — a phone app that
+    compensates its own output latency, say. They still play, mute and group;
+    a write to one is refused, as the real server refuses a key it lacks."""
 
     ignores_delay: set[str] = field(default_factory=set)
     """Speakers whose client takes a new delay, reports it back, and plays on
@@ -148,9 +154,14 @@ class FakeMusicAssistant:
                 available=True,
                 muted=self._reported_mute(s.player_id) if self.report_mute_state else None,
                 volume_level=self.volumes.get(s.player_id, 50),
-                sync_adjust_ms=self._reported_adjust.get(s.player_id, s.sync_adjust_ms),
-                sync_adjust_key=self.delay_key,
-                delay_range_ms=self.delay_range_ms,
+                sync_adjust_ms=(
+                    0
+                    if s.player_id in self.no_delay
+                    else self._reported_adjust.get(s.player_id, s.sync_adjust_ms)
+                ),
+                sync_adjust_key=None if s.player_id in self.no_delay else self.delay_key,
+                delay_range_ms=None if s.player_id in self.no_delay else self.delay_range_ms,
+                can_mute=s.player_id not in self.ignores_mute,
                 # The leader carries the membership and each member names its
                 # leader, which is how Music Assistant reports a sync group.
                 group_members=(
@@ -177,6 +188,8 @@ class FakeMusicAssistant:
         return any(player_id in members for members in self.groups.values())
 
     async def set_sync_adjust(self, player_id: str, milliseconds: int) -> None:
+        if player_id in self.no_delay:
+            raise RuntimeError(f"player {player_id} has no delay setting to write")
         if self.delay_range_ms is not None:
             low, high = self.delay_range_ms
             if not low <= milliseconds <= high:
@@ -258,6 +271,8 @@ class FakeMusicAssistant:
             **{**self.config.__dict__, "track_rate": int(rate[0]) if rate else None}
         )
         self._playback_started = self.clock.now
+        # The stream goes to the group the player leads, and to nobody else.
+        self._stream_to = set(self.groups.get(player_id, [player_id]))
         self._playing = True
 
     async def stop(self, player_id: str) -> None:
@@ -282,7 +297,12 @@ class FakeMusicAssistant:
         rounds = self._rounds(config, chirp_count)
         # A speaker outside the group never receives the stream, so it is
         # silent no matter what its mute state says.
-        audible = [s for s in self.speakers if s.player_id not in self.ungroupable]
+        audible = [
+            s
+            for s in self.speakers
+            if s.player_id not in self.ungroupable
+            and (not self._stream_to or s.player_id in self._stream_to)
+        ]
         recording = render_recording(audible, rounds, config)
         return recording, config.mic_sample_rate
 

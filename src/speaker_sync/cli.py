@@ -152,7 +152,9 @@ async def connect_music_assistant(ma_url: str, token: str | None):
     players = [p for p in found if p.is_calibratable]
     print(f"Found {len(players)} calibratable player(s).")
     for player in found:
-        if not player.is_calibratable:
+        if player.is_reference:
+            print(f"  measuring {player.name} as a reference: no delay setting, never written")
+        elif not player.is_calibratable:
             print(f"  skipping {player.name}: {player.exclusion_reason}")
     print()
     return backend
@@ -227,7 +229,13 @@ async def _players(args) -> int:
     print(f"{'name':{width}}  {'transport':16} {'provider':18} {'sync_adjust':>11}  verdict")
     for player in players:
         setting = f"{player.sync_adjust_ms} ms" if player.supports_sync_adjust else "absent"
-        verdict = "calibratable" if player.is_calibratable else player.exclusion_reason
+        verdict = (
+            "calibratable"
+            if player.is_calibratable
+            else "reference (measured, not adjustable)"
+            if player.is_reference
+            else player.exclusion_reason
+        )
         print(
             f"{player.name:{width}}  {player.transport:16} {player.provider:18} "
             f"{setting:>11}  {verdict}"

@@ -187,6 +187,86 @@ class CalibrationReport:
         return self.after.together if self.after else None
 
 
+def session_players(players: Iterable[PlayerInfo]) -> list[PlayerInfo]:
+    """The players a session measures, adjustable ones first.
+
+    References — players without a delay setting — take part, but never lead:
+    the leader carries the stream for everyone, and the typical reference is
+    a phone app that leaves, and takes its group with it, when the app is
+    closed.
+    """
+    measurable = [p for p in players if p.is_measurable]
+    return [p for p in measurable if not p.is_reference] + [
+        p for p in measurable if p.is_reference
+    ]
+
+
+def _need_two(players: Sequence[PlayerInfo]) -> None:
+    if len(players) < 2:
+        raise ValueError(
+            say(
+                en="need at least two speakers that make a sound and can be muted",
+                ru="нужно хотя бы две колонки, которые звучат и умеют заглушаться",
+            )
+        )
+
+
+def solution_problems(solution: CalibrationSolution) -> list[str]:
+    """What the solver could not do, in words — about references, mostly."""
+    problems: list[str] = []
+    references = solution.references
+    if solution.reference_late_ms is not None and references:
+        names = ", ".join(f"«{c.name}»" for c in references)
+        late = solution.reference_late_ms
+        problems.append(
+            say(
+                en=f"{names} arrives {late:.0f} ms after the latest point the other speakers "
+                "can be moved to. Their delay setting can only make a speaker play earlier, "
+                "never later, so this cannot be corrected from the server — nothing was "
+                "written. Likely causes: the app's own latency compensation does not cover "
+                "the whole path (a Bluetooth speaker on the phone adds 100–250 ms the app may "
+                "not know about), or extra buffering over Wi-Fi. Remedies: set an output "
+                "latency offset in the app if it has one, use the phone's own speaker or a "
+                "cable instead of Bluetooth, or switch it off here to align the others among "
+                "themselves.",
+                ru=f"{names} приходит на {late:.0f} мс позже самой поздней точки, куда можно "
+                "сдвинуть остальные колонки. Их настройка задержки умеет только ускорять "
+                "колонку, но не задерживать, поэтому с сервера это не исправить — ничего не "
+                "записано. Вероятные причины: собственная компенсация задержки приложения "
+                "учитывает не весь путь (Bluetooth-колонка у телефона добавляет 100–250 мс, о "
+                "которых приложение может не знать) или лишняя буферизация по Wi-Fi. Что "
+                "делать: задать в приложении поправку задержки выхода, если она есть, играть "
+                "через динамик телефона или по кабелю вместо Bluetooth, или выключить её "
+                "здесь, чтобы выровнять остальные между собой.",
+            )
+        )
+    if len(references) > 1 and solution.reference_disagreement_ms > AUDIBLE_SPREAD_MS:
+        names = ", ".join(f"«{c.name}»" for c in references)
+        apart = solution.reference_disagreement_ms
+        problems.append(
+            say(
+                en=f"the references {names} arrive {apart:.1f} ms apart and cannot all be "
+                "met; the other speakers were aimed halfway between them. To align exactly "
+                "to one of them, switch the others off here.",
+                ru=f"опорные колонки {names} расходятся на {apart:.1f} мс, и попасть во все "
+                "сразу нельзя; остальные колонки нацелены посередине. Чтобы выровнять точно "
+                "по одной из них, выключите здесь остальные.",
+            )
+        )
+    for correction in solution.clamped_players:
+        problems.append(
+            say(
+                en=f"«{correction.name}» cannot be moved far enough: its setting ends at "
+                f"{correction.target_adjust_ms} ms, so it stays "
+                f"{abs(correction.residual_error_ms):.1f} ms off.",
+                ru=f"«{correction.name}» нельзя сдвинуть достаточно: её настройка "
+                f"заканчивается на {correction.target_adjust_ms} мс, и она остаётся в "
+                f"{abs(correction.residual_error_ms):.1f} мс от цели.",
+            )
+        )
+    return problems
+
+
 async def measure_once(
     backend: SpeakerBackend,
     recorder: Recorder,
@@ -511,6 +591,7 @@ def build_measurements(
             spread_ms=reading.spread_ms,
             delay_range_ms=by_id[player_id].delay_range_ms if player_id in by_id else None,
             sign=by_id[player_id].delay_sign if player_id in by_id else None,
+            fixed=by_id[player_id].is_reference if player_id in by_id else False,
         )
         for player_id, reading in pass_.analysis.readings.items()
     ]
@@ -534,7 +615,7 @@ async def apply_solution(
     started at looks unchanged, while the device is actually holding the
     previous attempt's value.
     """
-    corrections = solution.changed() if only_changed else solution.corrections
+    corrections = solution.changed() if only_changed else solution.writable()
     applied: list[tuple[str, int]] = []
     for correction in corrections:
         await backend.set_sync_adjust(correction.player_id, correction.target_adjust_ms)
@@ -928,7 +1009,7 @@ async def calibrate(
     However it ends, the speakers are left grouped, muted and at the volume
     they were found in — see :class:`PlayerStateSnapshot`.
     """
-    involved = [p.player_id for p in await backend.list_players() if p.is_calibratable]
+    involved = [p.player_id for p in session_players(await backend.list_players())]
     async with preserved_player_state(backend, involved) as restore_problems:
         report = await _calibrate(
             backend,
@@ -959,12 +1040,13 @@ async def _calibrate(
     progress: ProgressCallback | None,
 ) -> CalibrationReport:
     cfg = config or SessionConfig()
-    players = [p for p in await backend.list_players() if p.is_calibratable]
-    if len(players) < 2:
+    players = session_players(await backend.list_players())
+    _need_two(players)
+    if all(p.is_reference for p in players):
         raise ValueError(
             say(
-                en="need at least two speakers that make a sound and have a delay setting",
-                ru="нужно хотя бы две колонки, которые звучат и имеют настройку задержки",
+                en="none of these speakers has a delay setting, so there is nothing to adjust",
+                ru="ни у одной из этих колонок нет настройки задержки — настраивать нечего",
             )
         )
 
@@ -990,6 +1072,8 @@ async def _calibrate(
 
     while True:
         solution = solve(measurements, sign=sign)
+        if not corrected_sign:
+            problems.extend(solution_problems(solution))
 
         writes = solution.corrections if corrected_sign else solution.changed()
         _report(progress, stage="applying", writes=len(writes))
@@ -999,7 +1083,7 @@ async def _calibrate(
             break
 
         _report(progress, stage="pass", which="after", players=len(players))
-        refreshed = [p for p in await backend.list_players() if p.is_calibratable]
+        refreshed = session_players(await backend.list_players())
         after = await measure_once(
             backend,
             recorder,
@@ -1158,14 +1242,8 @@ async def check_alignment(
     a calibration in a single format cannot see.
     """
     cfg = config or SessionConfig()
-    players = [p for p in await backend.list_players() if p.is_calibratable]
-    if len(players) < 2:
-        raise ValueError(
-            say(
-                en="need at least two speakers that make a sound and have a delay setting",
-                ru="нужно хотя бы две колонки, которые звучат и имеют настройку задержки",
-            )
-        )
+    players = session_players(await backend.list_players())
+    _need_two(players)
 
     passes: dict[int, MeasurementPass] = {}
     problems: list[str] = []
@@ -1251,7 +1329,7 @@ async def play_listening_test(
     more than a measurement does. ``on_playing`` is told once it is audible.
     Returns whatever could not be restored.
     """
-    players = [p for p in await backend.list_players() if p.is_calibratable]
+    players = session_players(await backend.list_players())
     if len(players) < 2:
         raise ValueError(
             say(

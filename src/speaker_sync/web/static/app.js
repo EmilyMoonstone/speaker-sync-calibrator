@@ -84,6 +84,8 @@ const STRINGS = {
     settings_found: 'delay setting not found — show what the player has',
     settings_all: 'player settings',
     ms: 'ms',
+    reference_pill: 'reference (not adjustable)',
+    reference_hint: 'No delay setting: measured, and the others are aligned to it. Its settings are never written.',
     ready_pill: 'ready',
     not_taking_part: 'not taking part',
     switch_off: 'switch off',
@@ -185,6 +187,8 @@ const STRINGS = {
     settings_found: 'настройка задержки не найдена — показать настройки плеера',
     settings_all: 'настройки плеера',
     ms: 'мс',
+    reference_pill: 'опорная (не настраивается)',
+    reference_hint: 'Нет настройки задержки: измеряется, остальные выравниваются по ней. Её настройки никогда не меняются.',
     ready_pill: 'готова',
     not_taking_part: 'не участвует',
     switch_off: 'выключить',
@@ -525,8 +529,11 @@ async function refreshPlayers() {
         ? `${p.sync_adjust_ms > 0 ? '+' : ''}${p.sync_adjust_ms} ${t('ms')}`
         : '—'}</td>
       <td class="verdict">
-        <span class="pill ${p.calibratable ? 'on' : 'off'}">${
-          escapeHtml(p.calibratable ? t('ready_pill') : (p.excluded_because || t('not_taking_part')))
+        <span class="pill ${p.measured ? 'on' : 'off'}"${
+          p.reference ? ` title="${escapeAttr(t('reference_hint'))}"` : ''}>${
+          escapeHtml(p.reference
+            ? t('reference_pill')
+            : p.calibratable ? t('ready_pill') : (p.excluded_because || t('not_taking_part')))
         }</span>${
         // A group is never measured either way, so a switch would do nothing.
         p.renders_audio === false ? '' : `
@@ -541,8 +548,10 @@ async function refreshPlayers() {
     `<thead><tr><th>${t('speaker')}</th><th>sync_adjust</th><th></th></tr></thead>
      <tbody>${rows || `<tr><td colspan="3">${t('no_players')}</td></tr>`}</tbody>`;
 
-  const ready = players.filter((p) => p.calibratable);
-  runnable = ready.length >= 2;
+  // References count towards the two a session needs; at least one speaker
+  // still has to be adjustable for a calibration to have anything to write.
+  const ready = players.filter((p) => p.measured);
+  runnable = ready.length >= 2 && ready.some((p) => p.calibratable);
   refreshControls();
   describeRoundLength();
 

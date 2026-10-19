@@ -201,3 +201,86 @@ def test_empty_input_is_not_an_error():
 def test_rejects_a_nonsense_sign():
     with pytest.raises(ValueError):
         solve([measurement("a", 0.0)], sign=0)
+
+
+# ---------------------------------------------------------------- references
+
+
+def sendspin(player_id, measured_ms, current=0):
+    """A Sendspin speaker: 0-5000, and a larger value plays earlier."""
+    return PlayerMeasurement(
+        player_id=player_id,
+        name=player_id,
+        measured_ms=measured_ms,
+        current_adjust_ms=current,
+        delay_range_ms=(0, 5000),
+        sign=-1,
+    )
+
+
+def reference(player_id, measured_ms):
+    """A player without a delay setting: measured, never moved."""
+    return PlayerMeasurement(
+        player_id=player_id, name=player_id, measured_ms=measured_ms, current_adjust_ms=0, fixed=True
+    )
+
+
+def test_speakers_are_brought_forward_onto_an_earlier_reference():
+    solution = solve([sendspin("pc", 140.0), sendspin("hifi", 125.0), reference("pixel", 100.0)])
+
+    targets = {c.player_id: c.target_adjust_ms for c in solution.corrections}
+    assert targets == {"pc": 40, "hifi": 25, "pixel": 0}
+    assert solution.strategy == "align_to_reference"
+    assert solution.fits
+    assert solution.spread_after_ms < 1.0
+    assert [c.player_id for c in solution.changed()] == ["pc", "hifi"]
+
+
+def test_an_existing_correction_is_backed_out_before_aiming_at_the_reference():
+    # pc already plays 30 ms early: measured 110, really 140 without it.
+    solution = solve([sendspin("pc", 110.0, current=30), reference("pixel", 100.0)])
+
+    assert {c.player_id: c.target_adjust_ms for c in solution.corrections}["pc"] == 40
+
+
+def test_a_reference_arriving_after_the_others_writes_nothing():
+    """Sendspin can only make a speaker play earlier. A reference that is
+    later than the others cannot be met from the server at all."""
+    solution = solve([sendspin("pc", 100.0, current=3), sendspin("hifi", 95.0), reference("pixel", 160.0)])
+
+    assert solution.strategy == "reference_too_late"
+    # hifi cannot arrive later than its own 95 ms, so that is the limit.
+    assert solution.reference_late_ms == pytest.approx(65.0)
+    assert solution.changed() == ()
+    assert not solution.fits
+    # Left exactly as found, including the correction already in force.
+    assert {c.player_id: c.target_adjust_ms for c in solution.corrections} == {
+        "pc": 3,
+        "hifi": 0,
+        "pixel": 0,
+    }
+
+
+def test_a_reference_within_rounding_of_reach_still_counts_as_met():
+    solution = solve([sendspin("pc", 100.0), reference("pixel", 100.3)])
+
+    assert solution.reference_late_ms is None
+    assert solution.strategy == "align_to_reference"
+
+
+def test_disagreeing_references_meet_halfway_and_say_by_how_much():
+    solution = solve([sendspin("pc", 150.0), reference("pixel", 100.0), reference("tablet", 110.0)])
+
+    assert solution.reference_disagreement_ms == pytest.approx(10.0)
+    pc = next(c for c in solution.corrections if c.player_id == "pc")
+    assert pc.target_adjust_ms == 45  # lands at 105, between the two
+    assert {c.player_id: round(c.residual_error_ms, 1) for c in solution.references} == {
+        "pixel": -5.0,
+        "tablet": 5.0,
+    }
+
+
+def test_a_reference_is_never_among_the_writable_corrections():
+    solution = solve([sendspin("pc", 140.0), reference("pixel", 100.0)])
+
+    assert [c.player_id for c in solution.writable()] == ["pc"]

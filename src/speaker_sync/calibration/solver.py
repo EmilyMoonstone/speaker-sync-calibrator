@@ -14,6 +14,10 @@ from dataclasses import dataclass
 # this range (music_assistant/constants.py).
 SYNC_ADJUST_LIMIT_MS = 500
 
+REACH_TOLERANCE_MS = 0.5
+"""A reference this close outside the reachable window still counts as met:
+the corrections are whole milliseconds, so half a millisecond is rounding."""
+
 
 def _bounds(measurement: "PlayerMeasurement", limit_ms: int) -> tuple[float, float]:
     """The values this player's setting accepts."""
@@ -84,6 +88,13 @@ class PlayerMeasurement:
     larger value whatever the probe found for some other kind of setting.
     """
 
+    fixed: bool = False
+    """A reference: measured, never adjusted.
+
+    A player without a delay setting cannot be moved, so it is not one more
+    speaker to align but the point the others are aligned *to*.
+    """
+
 
 @dataclass(frozen=True)
 class PlayerCorrection:
@@ -104,6 +115,9 @@ class PlayerCorrection:
     """The player's specified direction, or ``None`` when the session's
     probed one was used for it."""
 
+    fixed: bool = False
+    """A reference: its target is always its current value, never written."""
+
     @property
     def delta_ms(self) -> int:
         return self.target_adjust_ms - self.current_adjust_ms
@@ -116,10 +130,34 @@ class CalibrationSolution:
     spread_before_ms: float
     spread_after_ms: float
 
+    reference_late_ms: float | None = None
+    """How much later the reference arrives than the others can be moved to.
+
+    Set when the alignment the references ask for is out of reach — a
+    Sendspin delay only ever makes a speaker play *earlier*, so a reference
+    arriving after the others cannot be met from the server. Nothing is
+    written then: the speakers are left as they are rather than moved to a
+    compromise nobody asked for.
+    """
+
+    reference_disagreement_ms: float = 0.0
+    """How far apart several references arrive among themselves.
+
+    They cannot all be met at once; the target sits halfway between the
+    earliest and the latest, which keeps the largest error as small as it
+    can be.
+    """
+
     @property
     def fits(self) -> bool:
         """True when every speaker can reach the target within the ± limit."""
-        return not any(correction.clamped for correction in self.corrections)
+        return self.reference_late_ms is None and not any(
+            correction.clamped for correction in self.corrections
+        )
+
+    @property
+    def references(self) -> tuple[PlayerCorrection, ...]:
+        return tuple(c for c in self.corrections if c.fixed)
 
     @property
     def clamped_players(self) -> tuple[PlayerCorrection, ...]:
@@ -127,7 +165,11 @@ class CalibrationSolution:
 
     def changed(self) -> tuple[PlayerCorrection, ...]:
         """Corrections that actually need writing back to the server."""
-        return tuple(c for c in self.corrections if c.delta_ms != 0)
+        return tuple(c for c in self.corrections if c.delta_ms != 0 and not c.fixed)
+
+    def writable(self) -> tuple[PlayerCorrection, ...]:
+        """Every correction that may be written at all — never a reference."""
+        return tuple(c for c in self.corrections if not c.fixed)
 
 
 def solve(
@@ -185,15 +227,44 @@ def solve(
     reach_low = max(low for low, _ in windows.values())
     reach_high = min(high for _, high in windows.values())
 
-    target, strategy = _pick_target(slowest, fastest, reach_low, reach_high)
+    reference_late_ms: float | None = None
+    disagreement = 0.0
+    fixed = [m for m in measurements if m.fixed]
+    if fixed:
+        # A reference cannot move, so it decides the target. Each of the
+        # others has its own window; only their intersection is reachable.
+        # A reference has no correction to back out: its arrival is simply
+        # what was measured.
+        arrivals = [intrinsic[m.player_id] for m in fixed]
+        disagreement = max(arrivals) - min(arrivals)
+        target = (max(arrivals) + min(arrivals)) / 2.0
+        strategy = "align_to_reference"
+        movable = [windows[m.player_id] for m in measurements if not m.fixed]
+        if movable:
+            low = max(w[0] for w in movable)
+            high = min(w[1] for w in movable)
+            if target > high + REACH_TOLERANCE_MS:
+                # Later than anyone can be moved to: leave everything be.
+                reference_late_ms = target - high
+                strategy = "reference_too_late"
+            elif low <= high:
+                target = min(max(target, low), high)
+    else:
+        target, strategy = _pick_target(slowest, fastest, reach_low, reach_high)
 
     corrections = []
     for measurement in measurements:
         own = intrinsic[measurement.player_id]
         own_sign = signs[measurement.player_id]
         low, high = _bounds(measurement, limit_ms)
-        wanted = own_sign * (target - own)
-        applied = int(round(max(low, min(high, wanted))))
+        if measurement.fixed or reference_late_ms is not None:
+            # Nothing to write: the target is what is already there.
+            applied = measurement.current_adjust_ms
+            clamped = False
+        else:
+            wanted = own_sign * (target - own)
+            applied = int(round(max(low, min(high, wanted))))
+            clamped = not low - 0.5 <= wanted <= high + 0.5
         corrections.append(
             PlayerCorrection(
                 player_id=measurement.player_id,
@@ -204,9 +275,10 @@ def solve(
                 target_adjust_ms=applied,
                 # What the speaker's arrival becomes, versus where we aimed.
                 residual_error_ms=(own + own_sign * applied) - target,
-                clamped=not low - 0.5 <= wanted <= high + 0.5,
+                clamped=clamped,
                 spread_ms=measurement.spread_ms,
                 sign=measurement.sign,
+                fixed=measurement.fixed,
             )
         )
 
@@ -216,4 +288,6 @@ def solve(
         strategy=strategy,
         spread_before_ms=spread_before,
         spread_after_ms=max(landings) - min(landings),
+        reference_late_ms=reference_late_ms,
+        reference_disagreement_ms=disagreement,
     )

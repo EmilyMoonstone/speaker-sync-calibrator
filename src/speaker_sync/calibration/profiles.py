@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from speaker_sync.calibration.session import CalibrationReport
+from speaker_sync.calibration.session import CalibrationReport, solution_problems
 from speaker_sync.calibration.solver import CalibrationSolution, PlayerMeasurement, solve
 from speaker_sync.i18n import say
 from speaker_sync.ma.backend import SpeakerBackend
@@ -157,6 +157,7 @@ class ApplyOutcome:
                 )
                 + ", ".join(self.unknown)
             )
+        notes.extend(solution_problems(self.solution))
         return tuple(notes)
 
 
@@ -316,7 +317,7 @@ async def apply_profile(backend: SpeakerBackend, profile: Profile) -> ApplyOutco
             )
         )
 
-    present = {p.player_id: p for p in await backend.list_players() if p.is_calibratable}
+    present = {p.player_id: p for p in await backend.list_players() if p.is_measurable}
     stored = {speaker.player_id: speaker for speaker in profile.speakers}
 
     def direction(player_id: str) -> int:
@@ -338,6 +339,9 @@ async def apply_profile(backend: SpeakerBackend, profile: Profile) -> ApplyOutco
             current_adjust_ms=present[player_id].sync_adjust_ms,
             delay_range_ms=present[player_id].delay_range_ms,
             sign=present[player_id].delay_sign,
+            # A reference is aligned to again, at its stored arrival, and
+            # never written.
+            fixed=present[player_id].is_reference,
         )
         for player_id, speaker in stored.items()
         if player_id in present
@@ -347,6 +351,14 @@ async def apply_profile(backend: SpeakerBackend, profile: Profile) -> ApplyOutco
             say(
                 en=f"none of the speakers in position {profile.name!r} are available right now",
                 ru=f"ни одна колонка из позиции {profile.name!r} сейчас недоступна",
+            )
+        )
+
+    if all(m.fixed for m in measurements):
+        raise ValueError(
+            say(
+                en=f"none of the speakers in position {profile.name!r} can be adjusted right now",
+                ru=f"ни одну колонку из позиции {profile.name!r} сейчас нельзя настроить",
             )
         )
 

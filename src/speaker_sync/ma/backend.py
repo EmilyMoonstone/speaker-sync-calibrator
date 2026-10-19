@@ -170,6 +170,15 @@ class PlayerInfo:
     active_group: str | None = None
     """The group player (a sync group, say) this player is playing in, if any."""
 
+    can_mute: bool | None = None
+    """Whether the server can mute this player; ``None`` when it does not say.
+
+    Muting is what isolates a speaker's round. A speaker that is calibrated
+    gets the benefit of the doubt here — the mute check catches a real
+    failure — but one that is only measured as a reference must not be a
+    gamble, so for it a definite "no" rules it out.
+    """
+
     user_enabled: bool = True
     """The manual switch: whether the user wants this speaker taken part in.
 
@@ -232,6 +241,39 @@ class PlayerInfo:
         )
 
     @property
+    def is_measurable(self) -> bool:
+        """Whether this player takes part in a session at all.
+
+        Everything :attr:`is_calibratable` asks for except a delay setting. A
+        speaker without one — a phone app that compensates its own output
+        latency and so offers the server nothing to adjust — still plays the
+        stream, and its arrival is a fixed point the others can be aligned to.
+        It has to be mutable, though: a speaker that cannot be silenced plays
+        through every other speaker's round.
+        """
+        return (
+            self.user_enabled
+            and self.available
+            and self.enabled
+            and not self.hidden
+            and self.renders_audio
+            and (
+                self.supports_sync_adjust
+                # Unreadable settings are not "no delay setting": that speaker
+                # may well have one, and is better left out than frozen.
+                or (self.can_mute is not False and not self.config_error)
+            )
+        )
+
+    @property
+    def is_reference(self) -> bool:
+        """Measured, never written: a fixed point for the others.
+
+        See :attr:`is_measurable`. Its configuration is never touched.
+        """
+        return self.is_measurable and not self.supports_sync_adjust
+
+    @property
     def is_calibratable(self) -> bool:
         """Whether this player can take part in a calibration session.
 
@@ -279,7 +321,7 @@ class PlayerInfo:
         reason the user can act on immediately, and hiding it behind "unavailable"
         would leave them flipping a switch whose state they cannot see.
         """
-        if self.is_calibratable:
+        if self.is_measurable:
             return None
         if not self.user_enabled:
             return say(en="switched off here", ru="выключена вручную")
@@ -293,7 +335,10 @@ class PlayerInfo:
             return say(en="hidden in Music Assistant", ru="скрыта в Music Assistant")
         if self.config_error:
             return say(en="its settings could not be read", ru="не удалось прочитать настройки")
-        return say(en="no delay setting", ru="нет настройки задержки")
+        return say(
+            en="no delay setting, and it cannot be muted",
+            ru="нет настройки задержки, и её нельзя заглушить",
+        )
 
 
 @dataclass(frozen=True)

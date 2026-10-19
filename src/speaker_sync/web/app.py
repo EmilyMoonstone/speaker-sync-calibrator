@@ -514,6 +514,10 @@ def create_app(state: AppState) -> web.Application:
                         # rest of the checks would imply.
                         "enabled": p.user_enabled,
                         "calibratable": p.is_calibratable,
+                        # Measured but never written: no delay setting of
+                        # its own, so the others are aligned to it.
+                        "measured": p.is_measurable,
+                        "reference": p.is_reference,
                         "excluded_because": p.exclusion_reason,
                         # A group never makes a sound of its own: it has no
                         # delay setting to miss and nothing to switch off.

@@ -201,7 +201,7 @@ async def test_players_from_another_provider_are_still_offered(state):
 
 EXCLUDED_PLAYERS = [
     PlayerInfo("sync", "Везде", "sync_group", sync_adjust_key=None),
-    PlayerInfo("odd", "Без настройки", "universal_player", sync_adjust_key=None),
+    PlayerInfo("odd", "Без настройки", "universal_player", sync_adjust_key=None, can_mute=False),
     PlayerInfo("off", "Выключена", "universal_player", available=False),
 ]
 
@@ -222,7 +222,7 @@ async def test_an_excluded_player_says_why(state):
     reasons = await reasons_for(state)
 
     assert reasons["Везде"] == "a group, not a speaker"
-    assert reasons["Без настройки"] == "no delay setting"
+    assert reasons["Без настройки"] == "no delay setting, and it cannot be muted"
     assert reasons["Выключена"] == "unavailable"
     assert reasons["Кухня (ESP32)"] is None
 
@@ -231,7 +231,7 @@ async def test_reasons_follow_the_browser_language(state):
     reasons = await reasons_for(state, **{"Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"})
 
     assert reasons["Везде"] == "группа, а не колонка"
-    assert reasons["Без настройки"] == "нет настройки задержки"
+    assert reasons["Без настройки"] == "нет настройки задержки, и её нельзя заглушить"
     assert reasons["Выключена"] == "недоступна"
 
 
@@ -808,3 +808,20 @@ async def test_the_listening_test_starts_over_the_socket(state):
 
     assert message["type"] == "listening"
     assert state.backend.played_urls == ["http://speaker-sync:8080/listen.wav"]
+
+
+async def test_a_player_without_a_delay_is_listed_as_a_reference(state):
+    state.backend.extra_players = [
+        PlayerInfo("pixel", "Pixel9", "sendspin", sync_adjust_key=None, can_mute=True)
+    ]
+    client = await client_for(create_app(state))
+    try:
+        payload = await (await client.get("/api/players")).json()
+    finally:
+        await client.close()
+
+    pixel = next(p for p in payload["players"] if p["player_id"] == "pixel")
+    assert pixel["reference"] is True
+    assert pixel["measured"] is True
+    assert pixel["calibratable"] is False
+    assert pixel["excluded_because"] is None
