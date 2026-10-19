@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 (fork EmilyMoonstone)
+- After a calibration, a check, a sign probe or the listening test, every speaker is back in the group, mute state and volume it was in before — also when the run fails or the browser is closed. No more helper group blocking a sync group ("can not be grouped with").
+- A speaker without a delay setting (e.g. MassDroid) is measured as a **reference (not adjustable)**: the others are aligned to it, and it is never written to. When it arrives after the others, nothing is written and the report says why.
+- Saved positions are applied the right way round on Sendspin speakers (they were written swapped).
+- Each written delay is read back where it takes effect; the verification names a speaker that did not move as far as its correction asked.
+- A speaker still in another group is released before grouping, so the test track reaches every speaker.
+- The report shows per speaker: arrival, delay before → after, direction, and what the verification saw.
+- The generated access token is no longer printed to the add-on log.
+
 ## 0.1.9
 - Speaker list fits a phone screen: each speaker is a block, the name no longer squeezed into a narrow column.
 - A group is no longer reported as missing its delay setting, and has no on/off switch (it is never measured anyway).

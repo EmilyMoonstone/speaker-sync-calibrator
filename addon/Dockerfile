@@ -8,7 +8,7 @@ FROM python:3.12-slim-bookworm
 # not next to the Dockerfile the way it is for the standalone image. It is
 # installed from the repository's own archive instead — no git needed, and
 # numpy and scipy come as wheels, so no compiler either.
-ARG SPEAKER_SYNC_REPO=https://github.com/vshivtsev-dev/speaker-sync-calibrator
+ARG SPEAKER_SYNC_REPO=https://github.com/EmilyMoonstone/speaker-sync-calibrator
 ARG SPEAKER_SYNC_REF=main
 # Passed by the Supervisor: the add-on version from config.yaml. Named in the
 # RUN line below so every new version rebuilds that layer. Without it the line
