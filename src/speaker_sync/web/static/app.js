@@ -117,7 +117,8 @@ const STRINGS = {
     delete: 'Delete',
     applying_position: (v) => `Applying “${v.name}”…`,
     applied_with_problems: (v) => `Applied (${v.n}), but: ${v.problems}`,
-    applied: (v) => `Position “${v.name}” applied, speakers changed: ${v.n}.`,
+    applied: (v) => `Position “${v.name}” applied, speakers changed: ${v.n}.`
+      + (v.n ? ' Nothing was measured — press “Check without changes” to confirm what you hear.' : ''),
     apply_failed: 'Could not apply: ',
     saved: (v) => `Position “${v.name}” saved.`,
     save_failed: 'Not saved: ',
@@ -215,7 +216,8 @@ const STRINGS = {
     delete: 'Удалить',
     applying_position: (v) => `Применяю «${v.name}»…`,
     applied_with_problems: (v) => `Применено (${v.n}), но: ${v.problems}`,
-    applied: (v) => `Позиция «${v.name}» применена, изменено колонок: ${v.n}.`,
+    applied: (v) => `Позиция «${v.name}» применена, изменено колонок: ${v.n}.`
+      + (v.n ? ' Ничего не измерялось — нажмите «Проверить без изменений», чтобы подтвердить результат.' : ''),
     apply_failed: 'Не удалось применить: ',
     saved: (v) => `Позиция «${v.name}» сохранена.`,
     save_failed: 'Не сохранилось: ',

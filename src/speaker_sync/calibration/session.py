@@ -162,6 +162,12 @@ class CalibrationReport:
 
     problems: tuple[str, ...] = field(default=())
 
+    verifications: dict[str, "PlayerVerification"] = field(default_factory=dict)
+    """Per speaker, how far it moved against how far it was asked to.
+
+    Empty when there was no verification pass. The anchor the movements are
+    measured against has no entry of its own."""
+
     @property
     def improved(self) -> bool:
         if self.after is None:
@@ -210,6 +216,7 @@ async def measure_once(
     signal = cfg.build_signal(total_chirps(rounds))
 
     leader = player_ids[0]
+    await release_from_other_groups(backend, player_ids, leader)
     await backend.set_group(leader, player_ids)
     await confirm_group(backend, leader, player_ids, sleep=sleep)
 
@@ -374,6 +381,32 @@ async def confirm_mute(
         deadline -= GROUP_POLL_SECONDS
 
 
+async def release_from_other_groups(
+    backend: SpeakerBackend, player_ids: Sequence[str], leader: str
+) -> None:
+    """Take the session's players out of any group that is not the session's.
+
+    Grouping a player that follows another leader is not refused, it is
+    *redirected*: Music Assistant adds the new members to the group the
+    player is already in. A speaker still in a sync group from the last song
+    therefore took the session's group with it, and the track then played on
+    that speaker alone. What is released here comes back afterwards with the
+    rest of the players' state.
+    """
+    ids = set(player_ids)
+    players = {p.player_id: p for p in await backend.list_players()}
+    for player_id in player_ids:
+        player = players.get(player_id)
+        if player is None:
+            continue
+        follows_another = player.synced_to is not None and player.synced_to != leader
+        if player_id == leader:
+            follows_another = player.synced_to is not None
+        leads_others = any(m not in ids for m in player.group_members if m != player_id)
+        if follows_another or leads_others or player.active_group:
+            await backend.ungroup(player_id)
+
+
 async def confirm_group(
     backend: SpeakerBackend,
     leader: str,
@@ -398,10 +431,23 @@ async def confirm_group(
     while True:
         players = {p.player_id: p for p in await backend.list_players()}
         grouped = set(players[leader].group_members) if leader in players else set()
-        if not grouped:
+        # A member naming another leader, or the leader itself following
+        # someone, is positive evidence even when the leader lists nobody.
+        elsewhere = [
+            pid
+            for pid in player_ids
+            if pid in players
+            and players[pid].synced_to is not None
+            and (pid == leader or players[pid].synced_to != leader)
+        ]
+        if not grouped and not elsewhere:
             return  # nothing reported: no evidence either way
 
-        missing = [pid for pid in player_ids if pid != leader and pid not in grouped]
+        missing = [
+            pid
+            for pid in player_ids
+            if pid in elsewhere or (grouped and pid != leader and pid not in grouped)
+        ]
         if not missing:
             return
         if deadline <= 0:
@@ -548,6 +594,98 @@ def observed_convention(
         return None  # nothing like what was asked for: not a sign question
 
     return 1 if moved > 0 else -1
+
+
+MOVE_TOLERANCE_MS = 1.0
+"""How far a speaker may land from where its written correction should put it."""
+
+MOVE_TOLERANCE_SHARE = 0.25
+"""The same, as a share of the movement asked for — for large corrections."""
+
+
+@dataclass(frozen=True)
+class PlayerVerification:
+    """What the verification pass showed one written correction doing."""
+
+    player_id: str
+    expected_ms: float
+    """How far the speaker should have moved relative to the anchor."""
+
+    observed_ms: float
+    """How far it did move, relative to the same anchor."""
+
+    @property
+    def error_ms(self) -> float:
+        return self.observed_ms - self.expected_ms
+
+    @property
+    def held(self) -> bool:
+        tolerance = max(MOVE_TOLERANCE_MS, abs(self.expected_ms) * MOVE_TOLERANCE_SHARE)
+        return abs(self.error_ms) <= tolerance
+
+
+def verify_movements(
+    before: MeasurementPass,
+    after: MeasurementPass,
+    solution: CalibrationSolution,
+    sign: int,
+) -> dict[str, PlayerVerification]:
+    """Compare each speaker's movement with what its correction asked for.
+
+    Getting better overall is not proof. A speaker whose client ignored the
+    write — or only applies a new delay after reconnecting — stays where it
+    was, and if it happened to be near the target already the spread still
+    shrinks. Each speaker is therefore held to its own expected movement.
+
+    Each pass has its own arbitrary origin, so movements are compared against
+    an anchor: the speaker asked to move least, ideally not at all.
+    """
+    expected = {
+        c.player_id: (c.sign or sign) * c.delta_ms
+        for c in solution.corrections
+        if c.player_id in before.latencies_ms and c.player_id in after.latencies_ms
+    }
+    if len(expected) < 2:
+        return {}
+    observed = {
+        pid: after.latencies_ms[pid] - before.latencies_ms[pid] for pid in expected
+    }
+    anchor = min(expected, key=lambda pid: abs(expected[pid]))
+    return {
+        pid: PlayerVerification(
+            player_id=pid,
+            expected_ms=expected[pid] - expected[anchor],
+            observed_ms=observed[pid] - observed[anchor],
+        )
+        for pid in expected
+        if pid != anchor
+    }
+
+
+def _check_the_movements(
+    verifications: dict[str, PlayerVerification], names: dict[str, str]
+) -> list[str]:
+    problems = []
+    for pid, check in verifications.items():
+        if check.held:
+            continue
+        name = names.get(pid, pid)
+        problems.append(
+            say(
+                en=f"«{name}» should have moved {check.expected_ms:+.1f} ms but moved "
+                f"{check.observed_ms:+.1f} ms. Its new delay is not (fully) in force: the "
+                "client may ignore it, or apply it only after reconnecting or restarting "
+                "the stream. The values written are therefore not what you hear — run "
+                "“Check” after restarting that speaker's client.",
+                ru=f"«{name}» должна была сдвинуться на {check.expected_ms:+.1f} мс, а "
+                f"сдвинулась на {check.observed_ms:+.1f} мс. Новая задержка действует не "
+                "(полностью): клиент её игнорирует или применяет только после "
+                "переподключения или перезапуска потока. Записанные значения не "
+                "совпадают с тем, что слышно — запустите «Проверку» после перезапуска "
+                "клиента этой колонки.",
+            )
+        )
+    return problems
 
 
 INDISTINGUISHABLE_MS = 0.2
@@ -848,6 +986,7 @@ async def _calibrate(
     after: MeasurementPass | None = None
     observed: int | None = None
     corrected_sign = False
+    verifications: dict[str, PlayerVerification] = {}
 
     while True:
         solution = solve(measurements, sign=sign)
@@ -897,6 +1036,11 @@ async def _calibrate(
         if after.together is not None:
             problems.extend(after.together.problems)
 
+        verifications = verify_movements(before, after, solution, sign)
+        problems.extend(
+            _check_the_movements(verifications, {p.player_id: p.name for p in players})
+        )
+
         if after.relative_spread_ms() > before.relative_spread_ms():
             problems.append(
                 say(
@@ -916,6 +1060,7 @@ async def _calibrate(
         applied=applied,
         sign=sign,
         observed_sign=observed,
+        verifications=verifications,
         # A fault present in both passes reports itself twice; the reader
         # learns nothing from the repetition. dict preserves first-seen order.
         problems=tuple(dict.fromkeys(problems)),
@@ -1135,6 +1280,7 @@ async def _start_listening_test(
 ) -> None:
     player_ids = [p.player_id for p in players]
     leader = player_ids[0]
+    await release_from_other_groups(backend, player_ids, leader)
     await backend.set_group(leader, player_ids)
     await confirm_group(backend, leader, player_ids, sleep=sleep)
     for player_id in player_ids:

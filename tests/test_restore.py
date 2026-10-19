@@ -153,3 +153,29 @@ async def test_players_outside_the_session_are_left_alone():
     await snapshot.restore(server)
 
     assert server.groups == {"avr": ["avr", "bt"]}
+
+
+async def test_a_leader_still_in_another_group_is_released_first():
+    """The live listening test: the session's leader was still in the sync
+    group from the last song, Music Assistant redirected the grouping there,
+    and the clicks played on that one speaker alone — unnoticed, because the
+    leader reported no members of its own."""
+    server, recorder, clock = make_server(snr_db=30.0)
+    await server.set_group("bt", ["bt", "esp32"])
+
+    report = await calibrate(server, recorder, sleep=clock.sleep)
+
+    assert report.spread_after_ms is not None and report.spread_after_ms < 2.0
+    # ...and the group it was taken out of is back as it was.
+    assert server.groups == {"bt": ["bt", "esp32"]}
+
+
+async def test_a_group_redirected_elsewhere_is_not_mistaken_for_success():
+    from speaker_sync.calibration.session import confirm_group
+
+    server, recorder, clock = make_server(snr_db=30.0)
+    await server.set_group("bt", ["bt", "esp32"])
+    await server.set_group("esp32", ["esp32", "avr", "bt"])  # redirected to bt
+
+    with pytest.raises(RuntimeError, match="did not join"):
+        await confirm_group(server, "esp32", ["esp32", "avr", "bt"], sleep=clock.sleep)

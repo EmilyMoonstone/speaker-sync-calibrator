@@ -295,7 +295,46 @@ class MusicAssistantBackend:
                     else "its config keys are: " + ", ".join(e.key for e in entries)
                 )
             )
-        await self._client.config.save_player_config(player_id, {delay.key: int(milliseconds)})
+        value = int(milliseconds)
+        await self._client.config.save_player_config(player_id, {delay.key: value})
+
+        # Read back where the value takes effect, rather than trusting the
+        # save. A linked protocol's setting is saved on the parent under the
+        # prefixed key and meant to pass through to the protocol player — and
+        # on a live system one write stayed on the parent while the speaker
+        # kept its old delay, so the calibration reported values that were
+        # never in force.
+        target, key = player_id, delay.key
+        if PROTOCOL_KEY_SPLITTER in delay.key:
+            target, key = delay.key.split(PROTOCOL_KEY_SPLITTER, 1)
+            if await self._stored_value(target, key) not in (None, value):
+                logger.warning(
+                    "%s=%s on %s did not reach protocol player %s; writing it there directly",
+                    delay.key,
+                    value,
+                    player_id,
+                    target,
+                )
+                await self._client.config.save_player_config(target, {key: value})
+
+        stored = await self._stored_value(target, key)
+        if stored is not None and stored != value:
+            raise RuntimeError(
+                say(
+                    en=f"wrote {value} ms to {key} of {target}, but the server still reports "
+                    f"{stored} ms — the correction did not arrive, so the calibration was "
+                    "stopped rather than report a value that is not in force",
+                    ru=f"записано {value} мс в {key} у {target}, но сервер по-прежнему "
+                    f"сообщает {stored} мс — поправка не дошла, поэтому калибровка "
+                    "остановлена, чтобы не показывать значение, которое не действует",
+                )
+            )
+
+    async def _stored_value(self, player_id: str, key: str) -> int | None:
+        """The value the server holds for one key, or ``None`` when it will not say."""
+        entries, _ = await self._config_entries(player_id)
+        entry = next((e for e in entries if e.key == key), None)
+        return None if entry is None else _current_value(entry)
 
     async def set_muted(self, player_id: str, muted: bool) -> None:
         await self._client.players.volume_mute(player_id, bool(muted))

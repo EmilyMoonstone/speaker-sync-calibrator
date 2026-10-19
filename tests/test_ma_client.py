@@ -746,3 +746,64 @@ async def test_grouping_state_and_its_undoing_go_through_the_library():
     assert players["esp32"].synced_to is None
     assert ("ungroup", "bt") in client.players.calls
     assert ("volume_set", "esp32", 35) in client.players.calls
+
+
+async def test_a_protocol_delay_that_stays_on_the_parent_is_written_through():
+    """The live case: the universal player took the prefixed key, the Sendspin
+    protocol player behind it kept its old delay, and the speaker played on
+    with the value the report said had been replaced."""
+    key = f"anlage{SPLIT}sendspin_static_delay"
+    client = FakeClient(
+        [FakePlayer("up1", "Anlage", active_output_protocol="anlage")],
+        entries={
+            "up1": [FakeEntry(key, range=(0, 5000), value=3)],
+            "anlage": [FakeEntry("sendspin_static_delay", range=(0, 5000), value=3)],
+        },
+    )
+
+    await MusicAssistantBackend(client).set_sync_adjust("up1", 0)
+
+    assert client.config.saved == [
+        ("up1", {key: 0}),
+        ("anlage", {"sendspin_static_delay": 0}),
+    ]
+
+
+async def test_a_protocol_delay_that_passes_through_is_written_once():
+    key = f"anlage{SPLIT}sendspin_static_delay"
+    client = FakeClient(
+        [FakePlayer("up1", "Anlage", active_output_protocol="anlage")],
+        entries={
+            "up1": [FakeEntry(key, range=(0, 5000), value=3)],
+            "anlage": [FakeEntry("sendspin_static_delay", range=(0, 5000), value=3)],
+        },
+    )
+    original = client.config.save_player_config
+
+    async def passing_through(player_id, values):
+        await original(player_id, values)
+        if key in values:  # the server forwards it, as it is meant to
+            await original("anlage", {"sendspin_static_delay": values[key]})
+            client.config.saved.pop()
+
+    client.config.save_player_config = passing_through
+
+    await MusicAssistantBackend(client).set_sync_adjust("up1", 0)
+
+    assert client.config.saved == [("up1", {key: 0})]
+
+
+async def test_a_write_that_never_arrives_stops_the_calibration():
+    """Better to stop than to report a value that is not in force."""
+    client = FakeClient(
+        [FakePlayer("pc", "PC", provider="sendspin")],
+        entries={"pc": [FakeEntry("sendspin_static_delay", range=(0, 5000), value=3)]},
+    )
+
+    async def ignored(player_id, values):
+        client.config.saved.append((player_id, dict(values)))
+
+    client.config.save_player_config = ignored
+
+    with pytest.raises(RuntimeError, match="still reports 3 ms"):
+        await MusicAssistantBackend(client).set_sync_adjust("pc", 0)

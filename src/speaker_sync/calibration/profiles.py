@@ -319,6 +319,13 @@ async def apply_profile(backend: SpeakerBackend, profile: Profile) -> ApplyOutco
     present = {p.player_id: p for p in await backend.list_players() if p.is_calibratable}
     stored = {speaker.player_id: speaker for speaker in profile.speakers}
 
+    def direction(player_id: str) -> int:
+        # A speaker's own direction wins over the session's, exactly as in the
+        # live path: Sendspin plays earlier with a larger value, whatever was
+        # probed for any other kind of setting. Dropping it here wrote the
+        # corrections the wrong way round on every Sendspin speaker.
+        return present[player_id].delay_sign or profile.sign
+
     measurements = [
         PlayerMeasurement(
             player_id=player_id,
@@ -326,9 +333,11 @@ async def apply_profile(backend: SpeakerBackend, profile: Profile) -> ApplyOutco
             # Describe the speaker as it would measure right now: its intrinsic
             # latency plus whatever correction is on it. The solver removes the
             # correction again, recovering the stored value exactly.
-            measured_ms=speaker.intrinsic_ms + profile.sign * present[player_id].sync_adjust_ms,
+            measured_ms=speaker.intrinsic_ms
+            + direction(player_id) * present[player_id].sync_adjust_ms,
             current_adjust_ms=present[player_id].sync_adjust_ms,
             delay_range_ms=present[player_id].delay_range_ms,
+            sign=present[player_id].delay_sign,
         )
         for player_id, speaker in stored.items()
         if player_id in present

@@ -93,6 +93,13 @@ class FakeMusicAssistant:
     and the server rejects anything outside it rather than clamping.
     """
 
+    ignores_delay: set[str] = field(default_factory=set)
+    """Speakers whose client takes a new delay, reports it back, and plays on
+    with the old one — as a client would that only applies it on reconnect.
+    Every number then looks right and the sound is unchanged."""
+
+    _reported_adjust: dict[str, int] = field(default_factory=dict, init=False)
+
     delay_key: str = "sync_adjust"
     """The config key the delay goes by, which decides whether its direction
     is specified (``sendspin_static_delay``) or has to be probed."""
@@ -141,7 +148,7 @@ class FakeMusicAssistant:
                 available=True,
                 muted=self._reported_mute(s.player_id) if self.report_mute_state else None,
                 volume_level=self.volumes.get(s.player_id, 50),
-                sync_adjust_ms=s.sync_adjust_ms,
+                sync_adjust_ms=self._reported_adjust.get(s.player_id, s.sync_adjust_ms),
                 sync_adjust_key=self.delay_key,
                 delay_range_ms=self.delay_range_ms,
                 # The leader carries the membership and each member names its
@@ -178,6 +185,9 @@ class FakeMusicAssistant:
                     f"static_delay_ms must be in range {low}-{high}, got {milliseconds}"
                 )
         self.writes.append((player_id, milliseconds))
+        if player_id in self.ignores_delay:
+            self._reported_adjust[player_id] = milliseconds
+            return
         self.speakers = [
             s.with_adjust(milliseconds) if s.player_id == player_id else s for s in self.speakers
         ]
@@ -206,6 +216,12 @@ class FakeMusicAssistant:
 
     async def set_group(self, leader_id: str, member_ids: list[str]) -> None:
         self.log.append(("group", leader_id, tuple(member_ids)))
+        # Music Assistant redirects grouping on a player that follows another
+        # to that player's leader ("Redirecting set_members from X to its group
+        # player"): the new members join the old group, not this one.
+        followed = self.synced_to(leader_id)
+        if followed is not None:
+            leader_id = followed
         # A refusal is silent, exactly as it is on real hardware: the command
         # succeeds and the speaker simply is not in the group afterwards.
         joining = [m for m in member_ids if m != leader_id and m not in self.ungroupable]

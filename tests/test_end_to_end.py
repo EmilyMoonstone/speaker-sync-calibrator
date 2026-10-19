@@ -488,3 +488,69 @@ async def test_custom_session_config_shortens_the_run():
 
     assert report.spread_after_ms is not None
     assert report.spread_after_ms < 3.0
+
+
+async def test_a_saved_sendspin_position_realigns_the_room_the_right_way_round():
+    """The live failure: a saved position applied to Sendspin speakers.
+
+    Sendspin's delay runs the other way from the session-wide default — a
+    larger value plays *earlier* — and that direction is a property of each
+    speaker, not of the session. Applying a position under the session's
+    sign instead aligned to the slowest speaker by "delaying" the others,
+    which on Sendspin pulled them further forward: the corrections came out
+    swapped and the speakers further apart than before.
+    """
+    speakers = [s.__class__(**{**s.__dict__, "sign": -1}) for s in mixed_speakers()]
+    server, recorder, clock = make_server(speakers, snr_db=30.0)
+    server.delay_range_ms = (0, 5000)
+    server.delay_key = "sendspin_static_delay"
+
+    report = await calibrate(server, recorder, sleep=clock.sleep)
+    profile = Profile.from_report("Flur", report)
+    calibrated = {s.player_id: s.sync_adjust_ms for s in server.speakers}
+    for speaker in list(server.speakers):
+        await server.set_sync_adjust(speaker.player_id, 0)
+
+    await apply_profile(server, profile)
+
+    assert {s.player_id: s.sync_adjust_ms for s in server.speakers} == calibrated
+    verified = await measure_once(
+        server, recorder, await server.list_players(), sleep=clock.sleep
+    )
+    assert verified.relative_spread_ms() < 2.0
+
+
+async def test_a_speaker_that_does_not_apply_its_new_delay_is_named():
+    """The verification has to hold each speaker to its own correction.
+
+    The client here accepts the write and reports the new value back, so every
+    number on the page looks right — and it plays on with the old delay. The
+    spread does not get *worse*, so the old check stayed silent and the
+    report read as a success while the room sounded as before.
+    """
+    speakers = [s.__class__(**{**s.__dict__, "sign": -1}) for s in mixed_speakers()]
+    server, recorder, clock = make_server(speakers, snr_db=30.0)
+    server.delay_range_ms = (0, 5000)
+    server.delay_key = "sendspin_static_delay"
+    server.ignores_delay = {"bt"}
+
+    report = await calibrate(server, recorder, sleep=clock.sleep)
+
+    assert dict(report.applied)["bt"] == pytest.approx(203, abs=2)
+    assert not report.verifications["bt"].held
+    assert report.verifications["bt"].observed_ms == pytest.approx(0.0, abs=1.0)
+    named = [p for p in report.problems if "Спальня (Bluetooth)" in p and "should have moved" in p]
+    assert named
+
+
+async def test_corrections_that_took_effect_raise_no_verification_problem():
+    speakers = [s.__class__(**{**s.__dict__, "sign": -1}) for s in mixed_speakers()]
+    server, recorder, clock = make_server(speakers, snr_db=30.0)
+    server.delay_range_ms = (0, 5000)
+    server.delay_key = "sendspin_static_delay"
+
+    report = await calibrate(server, recorder, sleep=clock.sleep)
+
+    assert report.verifications
+    assert all(check.held for check in report.verifications.values())
+    assert not any("should have moved" in p for p in report.problems)
