@@ -1018,6 +1018,7 @@ def describe(report: CalibrationReport) -> dict:
         ),
         "improved": report.improved,
         "written": len(report.applied),
+        "suspect": report.suspect,
         "problems": list(report.problems),
         "together": (
             None

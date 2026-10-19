@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 (fork EmilyMoonstone)
+- **Simpler page.** Three numbered steps — check the microphone, speaker test, calibrate. The check, the listening test, the round length and all explanations are under "More".
+- **Results in one sentence** with a mark (in sync / better but … / nothing written because …). Notes and the per-speaker table open on request, and by themselves when something is wrong.
+- **Speakers** as a short list with a switch each; connection, delay setting and player settings under "Details". Groups and players hidden in Music Assistant are folded away.
+- A result in doubt offers no "Save".
+
 ## 0.4.1 (fork EmilyMoonstone)
 - Rounds keep to the test track's timetable, so slow mute commands no longer slide round boundaries onto the wrong speaker.
 - Writing is all or nothing: a write refused half way puts the earlier ones back (also when applying a position).

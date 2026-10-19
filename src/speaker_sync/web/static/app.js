@@ -37,7 +37,7 @@ const STRINGS = {
     switch_note: 'A speaker switched off is left alone: it is not measured, not grouped'
       + ' and its delay is not changed. Useful for a subwoofer, a speaker in another'
       + ' room, or one you set by hand.',
-    idle: 'Put the phone where you listen and press “Calibrate”.',
+    idle: 'Put the phone where you listen and follow the steps.',
     chirps_label: 'Chirps per speaker',
     run: 'Calibrate',
     run_note: 'It will be quiet at first, then the speakers take turns playing short'
@@ -111,8 +111,8 @@ const STRINGS = {
     human_wrong: '✗ no, something else',
     human_thanks_ok: 'Noted: sounded right.',
     human_thanks_wrong: 'Noted — this run will not write anything.',
-    mic_test: 'Test microphone',
-    mic_test_stop: 'Stop microphone test',
+    mic_test: 'Test',
+    mic_test_stop: 'Stop',
     mic_test_note: 'Microphone open. Play something and watch the level; it should move but not turn red.',
     refining: 'Correcting the remaining difference …',
     measuring_attempt: (v) => `Measuring (${v.attempt} of ${v.planned}) …`,
@@ -130,13 +130,41 @@ const STRINGS = {
     speaker_test_passed: 'Every speaker played on its own and fell silent when muted —'
       + ' the measurement can trust its rounds.',
     silence_round: 'nobody (all muted)',
+    step_mic: 'Check the microphone',
+    step_mic_hint: 'Optional — the level should move, but not turn red.',
+    step_test: 'Speaker test, by ear',
+    step_test_hint: 'Recommended the first time: each speaker on its own, you answer.',
+    step_run: 'Calibrate',
+    step_run_hint: 'Phone where you listen, room quiet — about a minute and a half.',
+    speaker_test_short: 'Start',
+    more: 'More — check, listening test, settings',
+    per_speaker: 'Details per speaker',
+    spread_label: 'Spread:',
+    notes_problems: (v) => `${v.n} ${plural(v.n, ['note', 'notes'])}`,
+    notes_more: 'Notes',
+    verdict_suspect: 'Nothing written — the measurement is in doubt. See the notes.',
+    verdict_settled: (v) => `Already in sync (${v.ms} ms) — nothing needed changing.`,
+    verdict_synced: (v) => `In sync: ${v.ms} ms apart.`,
+    verdict_improved: (v) => `Better, but still ${v.ms} ms apart — see the notes.`,
+    verdict_nothing: 'Nothing written — see the notes.',
+    verdict_failed: 'Not better after correcting — see the notes.',
+    check_ok: (v) => `In sync: ${v.ms} ms apart.`,
+    check_apart: (v) => `${v.ms} ms apart — calibrate.`,
+    check_close: (v) => `Close (${v.ms} ms), with remarks.`,
+    info: 'Details',
+    transport: 'Connection',
+    delay_now: 'Delay setting',
+    no_delay_setting: 'No delay setting.',
+    not_used: (v) => `Not used (${v.n}) — groups, and players hidden or off in Music Assistant`,
+    about_switch: 'What does the switch do?',
+    about_positions: 'What is a position?',
     ready_pill: 'ready',
     not_taking_part: 'not taking part',
     switch_off: 'switch off',
     switch_on: 'switch on',
     speaker: 'Speaker',
     no_players: 'Music Assistant reported no players',
-    need_two: 'At least two speakers need to be switched on. The reasons are in the list above.',
+    need_two: 'At least two speakers need to be switched on — see “Speakers” below.',
     no_players_status: 'Music Assistant reported no players.',
     ready_mixed: (v) => `Ready, ${v.n} ${plural(v.n, ['speaker', 'speakers'])}. Some of them`
       + ' are not Sendspin — accuracy will depend on their own synchronisation.',
@@ -180,7 +208,7 @@ const STRINGS = {
     switch_note: 'Выключенную колонку калибровка не трогает: её не замеряют, в группу не'
       + ' берут и задержку ей не меняют. Пригодится для сабвуфера, колонки в другой'
       + ' комнате или той, что настроена вручную.',
-    idle: 'Положите телефон туда, где слушаете, и нажмите «Калибровать».',
+    idle: 'Поставьте телефон туда, где слушаете, и следуйте шагам.',
     chirps_label: 'Свистов на колонку',
     run: 'Калибровать',
     run_note: 'Во время замера будет тихо, потом колонки по очереди издадут короткие'
@@ -255,8 +283,8 @@ const STRINGS = {
     human_wrong: '✗ нет, что-то другое',
     human_thanks_ok: 'Отмечено: звучало правильно.',
     human_thanks_wrong: 'Отмечено — этот запуск ничего не запишет.',
-    mic_test: 'Проверить микрофон',
-    mic_test_stop: 'Остановить проверку микрофона',
+    mic_test: 'Проверить',
+    mic_test_stop: 'Стоп',
     mic_test_note: 'Микрофон открыт. Включите что-нибудь и следите за уровнем: он должен двигаться, но не краснеть.',
     refining: 'Доправляю оставшуюся разницу …',
     measuring_attempt: (v) => `Измеряю (${v.attempt} из ${v.planned}) …`,
@@ -274,13 +302,41 @@ const STRINGS = {
     speaker_test_passed: 'Каждая колонка играла отдельно и замолкала при заглушении —'
       + ' замеру можно доверять.',
     silence_round: 'никто (все заглушены)',
+    step_mic: 'Проверить микрофон',
+    step_mic_hint: 'По желанию — уровень должен двигаться, но не краснеть.',
+    step_test: 'Проверка колонок на слух',
+    step_test_hint: 'Советуем в первый раз: каждая колонка по отдельности, вы отвечаете.',
+    step_run: 'Калибровка',
+    step_run_hint: 'Телефон там, где слушаете, в комнате тихо — около полутора минут.',
+    speaker_test_short: 'Начать',
+    more: 'Ещё — проверка, проба на слух, настройки',
+    per_speaker: 'Подробно по колонкам',
+    spread_label: 'Расхождение:',
+    notes_problems: (v) => `${v.n} ${plural(v.n, ['замечание', 'замечания', 'замечаний'])}`,
+    notes_more: 'Замечания',
+    verdict_suspect: 'Ничего не записано — замер под сомнением. См. замечания.',
+    verdict_settled: (v) => `Уже синхронно (${v.ms} мс) — менять было нечего.`,
+    verdict_synced: (v) => `Синхронно: расхождение ${v.ms} мс.`,
+    verdict_improved: (v) => `Лучше, но всё ещё ${v.ms} мс — см. замечания.`,
+    verdict_nothing: 'Ничего не записано — см. замечания.',
+    verdict_failed: 'После поправки не стало лучше — см. замечания.',
+    check_ok: (v) => `Синхронно: расхождение ${v.ms} мс.`,
+    check_apart: (v) => `Расхождение ${v.ms} мс — откалибруйте.`,
+    check_close: (v) => `Почти (${v.ms} мс), есть замечания.`,
+    info: 'Подробно',
+    transport: 'Подключение',
+    delay_now: 'Настройка задержки',
+    no_delay_setting: 'Нет настройки задержки.',
+    not_used: (v) => `Не используются (${v.n}) — группы и плееры, скрытые или выключенные в Music Assistant`,
+    about_switch: 'Что делает переключатель?',
+    about_positions: 'Что такое позиция?',
     ready_pill: 'готова',
     not_taking_part: 'не участвует',
     switch_off: 'выключить',
     switch_on: 'включить',
     speaker: 'Колонка',
     no_players: 'Music Assistant не отдал ни одного плеера',
-    need_two: 'Нужно минимум две включённые колонки. Причины — в списке выше.',
+    need_two: 'Нужно включить хотя бы две колонки — см. «Колонки» ниже.',
     no_players_status: 'Music Assistant не отдал ни одного плеера.',
     ready_mixed: (v) => `Готово, колонок: ${v.n}. Часть из них не Sendspin — точность`
       + ' будет зависеть от их собственной синхронизации.',
@@ -360,7 +416,7 @@ function refreshControls() {
   el('check').disabled = busy || !runnable;
   el('listen').disabled = busy || !runnable;
   el('refresh').disabled = busy;
-  document.querySelectorAll('#players .toggle').forEach((b) => { b.disabled = busy; });
+  document.querySelectorAll('#players .switch, #unused .switch').forEach((b) => { b.disabled = busy; });
 }
 
 function setBusy(value) {
@@ -805,54 +861,22 @@ async function refreshPlayers() {
   // Only while the field is not being edited, or typing would fight the poll.
   if (document.activeElement !== chirps) chirps.value = data.chirps_per_round;
 
-  // Re-rendering would fold every open settings list back up.
+  // Re-rendering would fold every open details list back up.
   const unfolded = new Set(
-    [...document.querySelectorAll('#players details[open]')].map((d) => d.dataset.player),
+    [...document.querySelectorAll('.spk details[open]')].map((d) => d.dataset.player),
   );
 
-  const rows = players.map((p) => `
-    <tr class="${p.enabled && p.renders_audio !== false ? '' : 'off'}">
-      <td>${escapeHtml(p.name)}<br><span class="sub">${escapeHtml(p.transport)}</span>${
-        // Always folded away: the names are for diagnosis, not for reading.
-        // The summary says so when they matter — the delay setting was not
-        // found, and seeing what is there turns that into a one-line fix.
-        // A group has no delay setting by nature, so nothing to diagnose.
-        p.renders_audio !== false && p.config_keys && p.config_keys.length
-          ? `<details class="keys" data-player="${escapeAttr(p.player_id)}"${
-              unfolded.has(p.player_id) ? ' open' : ''}><summary>${t(
-              p.enabled && p.available && !p.sync_adjust_key && !p.reference
-                ? 'settings_found' : 'settings_all'
-            )}</summary>${escapeHtml(p.config_keys.join(', '))}</details>`
-          : ''
-      }${
-        // A failed read is a different fault from an absent setting, and the
-        // server's own words are what identify it.
-        p.config_error
-          ? `<br><span class="sub bad">${escapeHtml(p.config_error)}</span>`
-          : ''
-      }</td>
-      <td class="num">${p.sync_adjust_key
-        ? `${p.sync_adjust_ms > 0 ? '+' : ''}${p.sync_adjust_ms} ${t('ms')}`
-        : '—'}</td>
-      <td class="verdict">
-        <span class="pill ${p.measured ? 'on' : 'off'}"${
-          p.reference ? ` title="${escapeAttr(t('reference_hint'))}"` : ''}>${
-          escapeHtml(p.reference
-            ? t('reference_pill')
-            : p.calibratable ? t('ready_pill') : (p.excluded_because || t('not_taking_part')))
-        }</span>${
-        // A group is never measured either way, so a switch would do nothing.
-        p.renders_audio === false ? '' : `
-        <button class="toggle" data-toggle="${escapeAttr(p.player_id)}"
-                data-enable="${p.enabled ? '0' : '1'}"${busy ? ' disabled' : ''}>${
-          t(p.enabled ? 'switch_off' : 'switch_on')
-        }</button>`}
-      </td>
-    </tr>`).join('');
-
-  el('players').innerHTML =
-    `<thead><tr><th>${t('speaker')}</th><th>sync_adjust</th><th></th></tr></thead>
-     <tbody>${rows || `<tr><td colspan="3">${t('no_players')}</td></tr>`}</tbody>`;
+  // The speakers that take part, and the ones switched off here so they can be
+  // switched back on. Groups and players Music Assistant hides or disables
+  // are folded away: there is nothing to do about them on this page.
+  const listed = (p) => p.measured || (!p.enabled && p.renders_audio !== false);
+  const shown = players.filter(listed);
+  const unused = players.filter((p) => !listed(p));
+  el('players').innerHTML = shown.map((p) => speakerRow(p, unfolded)).join('')
+    || `<li class="sub">${t('no_players')}</li>`;
+  el('unused').innerHTML = unused.map((p) => speakerRow(p, unfolded)).join('');
+  el('unused-box').hidden = !unused.length;
+  el('unused-summary').textContent = t('not_used', { n: unused.length });
 
   // References count towards the two a session needs; at least one speaker
   // still has to be adjustable for a calibration to have anything to write.
@@ -861,11 +885,9 @@ async function refreshPlayers() {
   refreshControls();
   describeRoundLength();
 
+  if (busy) return;  // the running job owns the status line
   if (!runnable) {
-    setStatus(
-      t(players.length ? 'need_two' : 'no_players_status'),
-      'err',
-    );
+    setStatus(t(players.length ? 'need_two' : 'no_players_status'), 'err');
   } else if (ready.some((p) => !p.is_sendspin)) {
     // Sendspin guarantees the tightest playback sync; other providers still
     // work, since any offset they add is measured and corrected, but the
@@ -874,6 +896,49 @@ async function refreshPlayers() {
   } else {
     setStatus(t('ready', { n: ready.length }));
   }
+}
+
+// One speaker: name, what it is doing in a session, the switch — and the
+// technical details folded away until asked for.
+function speakerRow(p, unfolded) {
+  const [kind, label] = !p.enabled
+    ? ['', p.excluded_because || t('not_taking_part')]
+    : p.reference
+      ? ['ref', t('reference_pill')]
+      : p.calibratable
+        ? ['on', t('ready_pill')]
+        : ['off', p.excluded_because || t('not_taking_part')];
+
+  const info = [`${t('transport')}: ${escapeHtml(p.transport)}`];
+  if (p.sync_adjust_key) {
+    info.push(`${t('delay_now')}: ${p.sync_adjust_ms} ${t('ms')}`);
+  } else if (p.renders_audio !== false) {
+    info.push(t(p.reference ? 'reference_hint' : 'no_delay_setting'));
+  }
+  // A failed read is a different fault from an absent setting, and the
+  // server's own words are what identify it.
+  if (p.config_error) info.push(`<span class="sub bad">${escapeHtml(p.config_error)}</span>`);
+  if (p.config_keys && p.config_keys.length) {
+    info.push(`${t('settings_all')}: ${escapeHtml(p.config_keys.join(', '))}`);
+  }
+
+  // A group is never measured either way, so a switch would do nothing.
+  const toggle = p.renders_audio === false ? '' : `
+    <button class="switch" role="switch" aria-checked="${p.enabled ? 'true' : 'false'}"
+            aria-label="${escapeAttr(p.name)}" title="${escapeAttr(t(p.enabled ? 'switch_off' : 'switch_on'))}"
+            data-toggle="${escapeAttr(p.player_id)}" data-enable="${p.enabled ? '0' : '1'}"
+            ${busy ? 'disabled' : ''}></button>`;
+
+  return `<li class="${p.enabled && p.measured ? '' : 'off'}">
+    <div class="spk-main">
+      <span class="spk-name">${escapeHtml(p.name)}</span>
+      <span class="pill ${kind}">${escapeHtml(label)}</span>${toggle}
+    </div>
+    <details class="spk-info" data-player="${escapeAttr(p.player_id)}"${
+      unfolded.has(p.player_id) ? ' open' : ''}>
+      <summary>${t('info')}</summary>${info.map((line) => `<p>${line}</p>`).join('')}
+    </details>
+  </li>`;
 }
 
 async function setPlayerEnabled(playerId, enabled) {
@@ -895,20 +960,46 @@ async function setPlayerEnabled(playerId, enabled) {
 
 // ------------------------------------------------------------------- report
 
+// The verdict mark: one glance says whether anything needs doing.
+function setVerdict(id, kind, text) {
+  const mark = { good: '✓', warn: '!', bad: '✕' }[kind];
+  el(id).className = 'verdict ' + kind;
+  el(id).innerHTML = `<span class="mark">${mark}</span><span>${escapeHtml(text)}</span>`;
+}
+
+// Small spreads are the interesting ones, so they keep their decimal.
+const msText = (value) => (value < 10 ? value.toFixed(1) : value.toFixed(0));
+
 function showReport(report) {
   el('result').classList.remove('hidden');
+  el('check-result').classList.add('hidden');
   setProgress(1);
 
-  // Small spreads are the interesting ones, so they keep their decimal.
-  const ms = (value) => (value < 10 ? value.toFixed(1) : value.toFixed(0));
+  const after = report.spread_after_ms;
   // Nothing written because nothing needed writing is a result, not a fault.
   const settled = report.written === 0 && !report.problems.length;
-  el('before').textContent = ms(report.spread_before_ms);
-  const after = el('after');
-  after.textContent = report.spread_after_ms === null
-    ? (settled ? ms(report.spread_before_ms) : '—')
-    : ms(report.spread_after_ms);
-  after.className = 'headline ' + (report.improved || settled ? 'good' : 'bad');
+  let kind;
+  let text;
+  if (report.suspect) {
+    [kind, text] = ['bad', t('verdict_suspect')];
+  } else if (settled) {
+    [kind, text] = ['good', t('verdict_settled', { ms: msText(report.spread_before_ms) })];
+  } else if (after !== null && report.improved && after <= 2) {
+    [kind, text] = [report.problems.length ? 'warn' : 'good', t('verdict_synced', { ms: msText(after) })];
+  } else if (after !== null && report.improved) {
+    [kind, text] = ['warn', t('verdict_improved', { ms: msText(after) })];
+  } else if (report.written === 0) {
+    [kind, text] = ['bad', t('verdict_nothing')];
+  } else {
+    [kind, text] = ['bad', t('verdict_failed')];
+  }
+  setVerdict('result-verdict', kind, text);
+  // A result in doubt is never offered for saving; the server refuses it too.
+  if (report.suspect) el('save-row').hidden = true;
+  el('before').textContent = msText(report.spread_before_ms);
+  el('after').textContent = after === null
+    ? (settled ? msText(report.spread_before_ms) : '—')
+    : msText(after);
 
   const moved = (p) => {
     if (p.reference) return `<span class="sub">${t('reference_pill')}</span>`;
@@ -919,64 +1010,64 @@ function showReport(report) {
   const checked = (p) => {
     const v = p.verification;
     if (!v) return '—';
-    const text = t('moved_by', {
+    const detail = t('moved_by', {
       observed: v.observed_ms.toFixed(1), expected: v.expected_ms.toFixed(1),
     });
     return `<span class="pill ${v.held ? 'on' : 'off'}">${v.held ? '✓' : '✗'}</span>`
-      + `<br><span class="sub">${escapeHtml(text)}</span>`;
+      + `<span class="sub">${escapeHtml(detail)}</span>`;
   };
-
   el('corrections').innerHTML =
     `<thead><tr><th>${t('speaker')}</th><th>${t('delay')}</th>`
     + `<th>${t('verification')}</th></tr></thead><tbody>` +
     report.players.map((p) => `
       <tr>
         <td>${escapeHtml(p.name)}${p.clamped ? ` <span class="pill off">${t('limit')}</span>` : ''}
-          <br><span class="sub">${t('arrives', { ms: p.arrival_ms.toFixed(1) })}</span></td>
+          <span class="sub">${t('arrives', { ms: p.arrival_ms.toFixed(1) })}</span></td>
         <td class="num">${p.reference ? '—' : `${p.current_adjust_ms} → <b>${p.target_adjust_ms}</b> ${t('ms')}`}
-          <br>${moved(p)}</td>
+          ${moved(p)}</td>
         <td class="num">${checked(p)}</td>
       </tr>`).join('') + '</tbody>';
 
-  const notes = [];
-  if (report.strategy === 'centered') {
-    notes.push(['warn', t('centered')]);
-  }
-  if (report.strategy === 'align_to_fastest') {
-    notes.push(['', t('fastest')]);
-  }
+  const notes = report.problems.map((p) => ['bad', p]);
   // A reference that arrives too late explains itself among the problems.
-  if (!report.fits && report.strategy !== 'reference_too_late') {
-    notes.push(['bad', t('does_not_fit')]);
-  }
-  report.problems.forEach((p) => notes.push(['bad', p]));
-  if (!notes.length && report.improved) {
-    notes.push(['', t('verified')]);
-  }
-  if (settled) {
-    notes.push(['', t('nothing_to_write')]);
-  }
-  // The calibration holds for where the microphone stood.
-  notes.push(['', t('position_note')]);
+  if (!report.fits && report.strategy !== 'reference_too_late') notes.push(['bad', t('does_not_fit')]);
+  if (report.strategy === 'centered') notes.push(['warn', t('centered')]);
+  if (report.strategy === 'align_to_fastest') notes.push(['', t('fastest')]);
+  if (!report.problems.length && report.improved) notes.push(['', t('verified')]);
   if (report.together && report.together.confirmed) {
     notes.push(['', t('together_ok', { spread: report.together.spread_ms.toFixed(1) })]);
   }
-
+  if (settled) notes.push(['', t('nothing_to_write')]);
+  // The calibration holds for where the microphone stood.
+  notes.push(['', t('position_note')]);
   el('notes').innerHTML = notes
-    .map(([kind, text]) => `<p class="note ${kind}">${escapeHtml(text)}</p>`)
+    .map(([k, note]) => `<p class="note ${k}">${escapeHtml(note)}</p>`)
     .join('');
+  el('result-notes-summary').textContent = report.problems.length
+    ? t('notes_problems', { n: report.problems.length })
+    : t('notes_more');
+  // Problems are shown straight away; on a good result they wait to be asked for.
+  el('result-notes-box').open = kind !== 'good';
+  el('result-table-box').open = false;
 
-  const good = report.improved || settled;
+  const good = kind === 'good';
   setStatus(t(good ? 'done' : 'done_with_notes'), good ? 'ok' : 'err');
+  el('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function showCheck(check) {
   el('check-result').classList.remove('hidden');
+  el('result').classList.add('hidden');
   setProgress(1);
 
-  const spread = el('check-spread');
-  spread.textContent = check.spread_ms.toFixed(check.spread_ms < 10 ? 1 : 0);
-  spread.className = 'headline ' + (check.in_sync ? 'good' : 'bad');
+  const spread = check.spread_ms;
+  const [kind, text] = check.in_sync
+    ? ['good', t('check_ok', { ms: msText(spread) })]
+    : spread > 2
+      ? ['bad', t('check_apart', { ms: msText(spread) })]
+      : ['warn', t('check_close', { ms: msText(spread) })];
+  setVerdict('check-verdict', kind, text);
+  el('check-spread').textContent = msText(spread);
 
   const khz = (rate) => `${(rate / 1000).toLocaleString(LANG)} ${LANG === 'ru' ? 'кГц' : 'kHz'}`;
   el('check-table').innerHTML =
@@ -997,10 +1088,16 @@ function showCheck(check) {
     notes.push(['', t('together_ok', { spread: check.together.spread_ms.toFixed(1) })]);
   }
   el('check-notes').innerHTML = notes
-    .map(([kind, text]) => `<p class="note ${kind}">${escapeHtml(text)}</p>`)
+    .map(([k, note]) => `<p class="note ${k}">${escapeHtml(note)}</p>`)
     .join('');
+  el('check-notes-summary').textContent = check.problems.length
+    ? t('notes_problems', { n: check.problems.length })
+    : t('notes_more');
+  el('check-notes-box').open = kind !== 'good';
+  el('check-table-box').open = false;
 
   setStatus(t(check.in_sync ? 'done' : 'done_with_notes'), check.in_sync ? 'ok' : 'err');
+  el('check-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 async function listen() {
@@ -1026,6 +1123,8 @@ async function refreshProfiles() {
   const data = await response.json();
   el('profiles-card').classList.remove('hidden');
   el('save').disabled = !data.can_save;
+  // Offered only for a result worth keeping.
+  el('save-row').hidden = !data.can_save;
 
   if (!data.profiles.length) {
     el('profiles').innerHTML =
@@ -1145,10 +1244,12 @@ el('save').addEventListener('click', saveProfile);
 el('refresh').addEventListener('click', refreshPlayers);
 
 // Delegated so the list can be re-rendered without rebinding every row.
-el('players').addEventListener('click', (event) => {
-  const toggle = event.target.closest('[data-toggle]');
-  if (toggle) setPlayerEnabled(toggle.dataset.toggle, toggle.dataset.enable === '1');
-});
+for (const list of ['players', 'unused']) {
+  el(list).addEventListener('click', (event) => {
+    const toggle = event.target.closest('[data-toggle]');
+    if (toggle) setPlayerEnabled(toggle.dataset.toggle, toggle.dataset.enable === '1');
+  });
+}
 
 el('profiles').addEventListener('click', (event) => {
   const apply = event.target.closest('[data-apply]');
