@@ -1608,9 +1608,12 @@ async def check_alignment(
                 together=True,
             )
             passes[rate] = pass_
-            problems.extend(pass_.analysis.problems)
+            # Named by format: the same finding from two passes otherwise
+            # reads as the report contradicting itself.
+            label = f"{rate / 1000:g} kHz: " if len(sample_rates) > 1 else ""
+            problems.extend(label + p for p in pass_.analysis.problems)
             if pass_.together is not None:
-                problems.extend(pass_.together.problems)
+                problems.extend(label + p for p in pass_.together.problems)
     problems.extend(restore_problems)
 
     names = {p.player_id: p.name for p in players}

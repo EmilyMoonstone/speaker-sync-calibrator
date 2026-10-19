@@ -130,3 +130,18 @@ async def test_a_check_is_described_for_the_page():
     assert rows["bt"]["offsets_ms"][0] > 150.0
     # The AVR lands 8 ms later relative to the others at 48 kHz.
     assert rows["avr"]["offsets_ms"][1] - rows["avr"]["offsets_ms"][0] == pytest.approx(8.0, abs=0.3)
+
+
+async def test_findings_from_each_format_say_which_format_they_are_from():
+    """Two passes, one per format: unlabelled, a finding from one and a clean
+    result from the other read as the report contradicting itself."""
+    speakers = speakers_with(avr={"together_shift_ms": 3.0})
+    server, recorder, clock = make_server(speakers, snr_db=30.0)
+    # Aligned first: only then does one speaker moving show in the spread.
+    await calibrate(server, recorder, signal_url=track_url, sleep=clock.sleep)
+
+    check = await check_alignment(server, recorder, signal_url=track_url, sleep=clock.sleep)
+
+    together = [p for p in check.problems if "whole group plays" in p]
+    assert together
+    assert all(p.startswith(("44.1 kHz: ", "48 kHz: ")) for p in together)
