@@ -788,6 +788,10 @@ async def test_grouping_state_and_its_undoing_go_through_the_library():
     assert ("volume_set", "esp32", 35) in client.players.calls
 
 
+async def _no_wait(seconds):
+    """Stands in for the read-back's waiting: the fakes never change by themselves."""
+
+
 async def test_a_protocol_delay_that_stays_on_the_parent_is_written_through():
     """The live case: the universal player took the prefixed key, the Sendspin
     protocol player behind it kept its old delay, and the speaker played on
@@ -801,7 +805,7 @@ async def test_a_protocol_delay_that_stays_on_the_parent_is_written_through():
         },
     )
 
-    await MusicAssistantBackend(client).set_sync_adjust("up1", 0)
+    await MusicAssistantBackend(client, sleep=_no_wait).set_sync_adjust("up1", 0)
 
     assert client.config.saved == [
         ("up1", {key: 0}),
@@ -845,5 +849,65 @@ async def test_a_write_that_never_arrives_stops_the_calibration():
 
     client.config.save_player_config = ignored
 
+    naps = []
+
+    async def nap(seconds):
+        naps.append(seconds)
+
     with pytest.raises(RuntimeError, match="still reports 3 ms"):
-        await MusicAssistantBackend(client).set_sync_adjust("pc", 0)
+        await MusicAssistantBackend(client, sleep=nap).set_sync_adjust("pc", 0)
+    # It waited for the value before giving up, a few seconds' worth.
+    assert sum(naps) >= 2.0
+
+
+async def test_a_write_that_takes_a_moment_to_show_is_not_called_lost():
+    """Music Assistant applies a setting asynchronously: saved, sent to the
+    client, reported back once taken. An immediate read sees the old value."""
+    entry = FakeEntry("sendspin_static_delay", range=(0, 5000), value=3)
+    client = FakeClient(
+        [FakePlayer("pc", "PC", provider="sendspin")], entries={"pc": [entry]}
+    )
+    pending = {}
+
+    async def save_later(player_id, values):
+        client.config.saved.append((player_id, dict(values)))
+        pending.update(values)
+
+    async def nap(seconds):
+        entry.value = pending.get("sendspin_static_delay", entry.value)
+
+    client.config.save_player_config = save_later
+
+    await MusicAssistantBackend(client, sleep=nap).set_sync_adjust("pc", 8)
+
+    assert client.config.saved == [("pc", {"sendspin_static_delay": 8})]
+
+
+async def test_a_protocol_player_that_reports_no_value_does_not_stop_the_run():
+    """The live failure: the protocol player's entry came back without its
+    value, the read fell back to the default 0, and a write that had arrived
+    — Music Assistant logged "Static delay changed to 8 ms" — was reported
+    lost and stopped the calibration."""
+    key = f"anlage{SPLIT}sendspin_static_delay"
+    client = FakeClient(
+        [FakePlayer("up1", "Anlage", active_output_protocol="anlage")],
+        entries={
+            "up1": [FakeEntry(key, range=(0, 5000), value=3)],
+            "anlage": [FakeEntry("sendspin_static_delay", range=(0, 5000), default_value=0)],
+        },
+    )
+
+    async def nap(seconds):
+        raise AssertionError("nothing to wait for")
+
+    await MusicAssistantBackend(client, sleep=nap).set_sync_adjust("up1", 8)
+
+    assert client.config.saved == [("up1", {key: 8})]
+
+
+def test_an_entry_spelled_current_value_is_read():
+    from speaker_sync.ma.client import ConfigEntryView
+
+    entry = ConfigEntryView.from_wire({"key": "sendspin_static_delay", "current_value": 8})
+
+    assert entry.value == 8

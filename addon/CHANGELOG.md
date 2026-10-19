@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (fork EmilyMoonstone)
+- Fix: a delay written to a speaker behind a universal player was reported as "did not arrive" although it had — the read-back took a missing value for 0 and did not wait for Music Assistant to apply it. It now waits up to 3 s and ignores places that report nothing.
+- A check no longer blames the track format for a speaker whose delay jumped between its two passes, and says which format each finding comes from.
+
 ## 0.3.0 (fork EmilyMoonstone)
 - **Live view while measuring**: microphone level meter, which speaker should be playing, whether the test sound is heard (good / quiet / none / overdriven) and a per-speaker tally.
 - **Your ear counts**: during each round, "only this speaker audible?" — answering no stops the run from writing anything.

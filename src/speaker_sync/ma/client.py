@@ -41,6 +41,15 @@ logger = logging.getLogger("speaker_sync.ma")
 
 DEFAULT_CONNECT_TIMEOUT = 30.0
 
+READBACK_SECONDS = 3.0
+"""How long a written delay may take to show up before it counts as lost.
+
+Music Assistant applies a setting asynchronously — it saves, tells the
+client, and reports the new value once the client has taken it — so an
+immediate read can still see the old one."""
+
+READBACK_POLL_SECONDS = 0.25
+
 # Names the delay setting goes by, most likely first: Music Assistant's own
 # (AirPlay, Squeezelite), Sendspin's, and earlier names. Matched with or
 # without a linked protocol's ``<id>||protocol||`` prefix.
@@ -108,7 +117,8 @@ class ConfigEntryView:
             type=str(raw.get("type") or ""),
             label=str(raw.get("label") or ""),
             range=tuple(span) if isinstance(span, (list, tuple)) and len(span) == 2 else None,
-            value=raw.get("value"),
+            # Spelled either way depending on the server release.
+            value=raw.get("value", raw.get("current_value")),
             default_value=raw.get("default_value"),
             hidden=bool(raw.get("hidden")),
             read_only=bool(raw.get("read_only")),
@@ -124,9 +134,16 @@ class MusicAssistantBackend:
     an import error at startup.
     """
 
-    def __init__(self, client: Any, listener: asyncio.Task | None = None) -> None:
+    def __init__(
+        self,
+        client: Any,
+        listener: asyncio.Task | None = None,
+        *,
+        sleep=asyncio.sleep,
+    ) -> None:
         self._client = client
         self._listener = listener
+        self._sleep = sleep
 
     @classmethod
     async def connect(
@@ -305,21 +322,25 @@ class MusicAssistantBackend:
         # on a live system one write stayed on the parent while the speaker
         # kept its old delay, so the calibration reported values that were
         # never in force.
-        target, key = player_id, delay.key
+        places = [(player_id, delay.key)]
         if PROTOCOL_KEY_SPLITTER in delay.key:
-            target, key = delay.key.split(PROTOCOL_KEY_SPLITTER, 1)
-            if await self._stored_value(target, key) not in (None, value):
-                logger.warning(
-                    "%s=%s on %s did not reach protocol player %s; writing it there directly",
-                    delay.key,
-                    value,
-                    player_id,
-                    target,
-                )
-                await self._client.config.save_player_config(target, {key: value})
+            places.append(tuple(delay.key.split(PROTOCOL_KEY_SPLITTER, 1)))
 
-        stored = await self._stored_value(target, key)
-        if stored is not None and stored != value:
+        wrong = await self._settled(places, value)
+        if wrong and len(places) == 2 and places[1] in dict(wrong):
+            target, key = places[1]
+            logger.warning(
+                "%s=%s on %s did not reach protocol player %s; writing it there directly",
+                delay.key,
+                value,
+                player_id,
+                target,
+            )
+            await self._client.config.save_player_config(target, {key: value})
+            wrong = await self._settled(places, value)
+
+        if wrong:
+            (target, key), stored = wrong[0]
             raise RuntimeError(
                 say(
                     en=f"wrote {value} ms to {key} of {target}, but the server still reports "
@@ -331,11 +352,38 @@ class MusicAssistantBackend:
                 )
             )
 
+    async def _settled(
+        self, places: list[tuple[str, str]], value: int
+    ) -> list[tuple[tuple[str, str], int]]:
+        """Wait for ``value`` to show up everywhere; return where it did not.
+
+        A place that reports no value at all is no evidence either way and is
+        not held against the write.
+        """
+        waited = 0.0
+        while True:
+            wrong = []
+            for place in places:
+                stored = await self._stored_value(*place)
+                if stored is not None and stored != value:
+                    wrong.append((place, stored))
+            if not wrong or waited >= READBACK_SECONDS:
+                return wrong
+            await self._sleep(READBACK_POLL_SECONDS)
+            waited += READBACK_POLL_SECONDS
+
     async def _stored_value(self, player_id: str, key: str) -> int | None:
-        """The value the server holds for one key, or ``None`` when it will not say."""
+        """The value the server holds for one key, or ``None`` when it will not say.
+
+        Not the default in its place: a server that leaves the value out of
+        its answer has said nothing about it, and reading that as "0" stopped
+        a live calibration over a write that had in fact arrived.
+        """
         entries, _ = await self._config_entries(player_id)
         entry = next((e for e in entries if e.key == key), None)
-        return None if entry is None else _current_value(entry)
+        if entry is None or entry.value is None:
+            return None
+        return _as_int(entry.value)
 
     async def set_muted(self, player_id: str, muted: bool) -> None:
         await self._client.players.volume_mute(player_id, bool(muted))
