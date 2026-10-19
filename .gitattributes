@@ -1,0 +1,2 @@
+# Patches must reach Linux byte for byte: never convert their line endings.
+*.patch -text
