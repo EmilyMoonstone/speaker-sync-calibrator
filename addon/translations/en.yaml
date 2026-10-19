@@ -25,6 +25,6 @@ configuration:
     name: Access token for direct access
     description: >-
       Only guards the mapped port; ingress uses your Home Assistant login.
-      Leave empty and one is generated and printed in the log.
+      Leave empty and a private one is generated, which keeps direct access closed.
 network:
   8080/tcp: Direct access, needs the access token (not needed with ingress)
