@@ -45,9 +45,10 @@ set to `auto` follows each browser's language and falls back to English;
 ## Direct access
 
 With port `8080` mapped, the app is reachable without ingress, guarded by an
-access token. Set one in **Access token for direct access**, or leave it empty
-and use the generated one printed in the add-on log. Open the address once
-with `?token=…`; it is then kept in a cookie.
+access token. Set one in **Access token for direct access** — left empty, a
+random one is generated and kept private, so direct access stays closed. The
+token is never written to the add-on log. Open the address once with
+`?token=…`; it is then kept in a cookie.
 
 ## Still hear an echo?
 

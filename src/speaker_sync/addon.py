@@ -184,9 +184,12 @@ def main() -> int:
 
     print(f"Music Assistant: {env['SPEAKER_SYNC_MA_URL'] or 'not found yet'}")
     print(f"Test track served to Music Assistant from: {env['SPEAKER_SYNC_AUDIO_BASE_URL']}")
+    # The token itself is never printed: the add-on log is readable by anyone
+    # with access to Home Assistant's logs and ends up in shared bug reports.
     print(
         "Open Speaker Sync Calibrator from the Home Assistant sidebar. For direct access on the "
-        f"mapped port, add ?token={env['SPEAKER_SYNC_ACCESS_TOKEN']} to the address once."
+        "mapped port, set an access token of your own on the Configuration tab and add "
+        "?token=<it> to the address once."
     )
 
     from speaker_sync.cli import run_server
