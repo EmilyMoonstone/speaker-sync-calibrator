@@ -145,3 +145,27 @@ async def test_findings_from_each_format_say_which_format_they_are_from():
     together = [p for p in check.problems if "whole group plays" in p]
     assert together
     assert all(p.startswith(("44.1 kHz: ", "48 kHz: ")) for p in together)
+
+
+async def test_a_speaker_jumping_between_passes_is_not_blamed_on_the_format():
+    """The live Anlage: 130 ms apart in one pass, in line in the next. No
+    resampler costs 130 ms; the speaker's delay jumped, and that is what the
+    check has to say."""
+    server, recorder, clock = make_server(snr_db=30.0)
+    server.wander_ms = {"avr": (130.0, 0.0)}
+
+    check = await check_alignment(server, recorder, signal_url=track_url, sleep=clock.sleep)
+
+    assert not any("depends on the" in p for p in check.problems)
+    jumped = [p for p in check.problems if "differently from one measurement" in p]
+    assert len(jumped) == 1 and "Гостиная (ресивер)" in jumped[0]
+
+
+async def test_a_real_format_difference_is_still_reported_as_one():
+    speakers = speakers_with(avr={"rate_latency_ms": ((48000, 3.0),)})
+    server, recorder, clock = make_server(speakers, snr_db=30.0)
+
+    check = await check_alignment(server, recorder, signal_url=track_url, sleep=clock.sleep)
+
+    assert any("depends on the" in p for p in check.problems)
+    assert not any("differently from one measurement" in p for p in check.problems)

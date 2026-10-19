@@ -556,8 +556,13 @@ def combine_passes(passes: Sequence[MeasurementPass], order: Sequence[str]) -> C
     return CombinedPasses(combined, variation, missing)
 
 
-def stability_problems(combined: CombinedPasses, names: dict[str, str]) -> list[str]:
-    unstable = combined.unstable()
+def stability_problems(
+    combined: CombinedPasses,
+    names: dict[str, str],
+    *,
+    tolerance: float = STABILITY_TOLERANCE_MS,
+) -> list[str]:
+    unstable = combined.unstable(tolerance)
     if not unstable:
         return []
     if len(unstable) == len(combined.variation_ms) - 1 and len(combined.variation_ms) == 2:
@@ -1512,6 +1517,10 @@ correction can only suit one of them."""
 
 CHECK_RATES = (44100, 48000)
 
+FORMAT_JUMP_MS = 20.0
+"""Past this, a difference between the two formats' passes is a speaker
+jumping, not resampling latency."""
+
 
 @dataclass(frozen=True)
 class AlignmentCheck:
@@ -1639,8 +1648,15 @@ async def check_alignment(
         )
 
     main_rate, *other_rates = list(passes)
+    # A difference this large between the two passes is not a format effect —
+    # resampling costs a few milliseconds at most — but a speaker whose delay
+    # jumped between them. Reported as what it is, rather than as a format
+    # dependence nobody could act on.
+    jumps = combine_passes(list(passes.values()), [p.player_id for p in players])
+    jumped = set(jumps.unstable(FORMAT_JUMP_MS))
+    problems.extend(stability_problems(jumps, names, tolerance=FORMAT_JUMP_MS))
     for pid, shift in check.format_shift_ms.items():
-        if abs(shift) <= FORMAT_SHIFT_TOLERANCE_MS:
+        if abs(shift) <= FORMAT_SHIFT_TOLERANCE_MS or pid in jumped or jumped:
             continue
         other = ", ".join(f"{r / 1000:g}" for r in other_rates)
         direction_en = "later" if shift > 0 else "earlier"
