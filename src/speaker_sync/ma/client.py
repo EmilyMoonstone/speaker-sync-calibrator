@@ -50,6 +50,13 @@ immediate read can still see the old one."""
 
 READBACK_POLL_SECONDS = 0.25
 
+COMMAND_TIMEOUT_SECONDS = 20.0
+"""How long one command to Music Assistant may take before it counts as lost.
+
+The library waits on a reply with no limit of its own, so a server that
+never answers — mid-restart, say — would hold a calibration, and the page
+with it, busy for good."""
+
 # Names the delay setting goes by, most likely first: Music Assistant's own
 # (AirPlay, Squeezelite), Sendspin's, and earlier names. Matched with or
 # without a linked protocol's ``<id>||protocol||`` prefix.
@@ -201,6 +208,20 @@ class MusicAssistantBackend:
 
         return cls(client, listener)
 
+    async def _command(self, call):
+        """Await one command to Music Assistant, but not for ever."""
+        try:
+            return await asyncio.wait_for(call, COMMAND_TIMEOUT_SECONDS)
+        except TimeoutError as error:
+            raise RuntimeError(
+                say(
+                    en=f"Music Assistant did not answer within {COMMAND_TIMEOUT_SECONDS:.0f} s — "
+                    "is it restarting? The run was stopped; the speakers are being put back.",
+                    ru=f"Music Assistant не ответил за {COMMAND_TIMEOUT_SECONDS:.0f} с — он "
+                    "перезапускается? Запуск остановлен, колонки возвращаются как были.",
+                )
+            ) from error
+
     async def close(self) -> None:
         await self._client.disconnect()
         if self._listener is not None and not self._listener.done():
@@ -278,8 +299,10 @@ class MusicAssistantBackend:
         told which one happened.
         """
         try:
-            raw = await self._client.send_command(
-                "config/players/get_entries", player_id=player_id, action=None, values=None
+            raw = await self._command(
+                self._client.send_command(
+                    "config/players/get_entries", player_id=player_id, action=None, values=None
+                )
             )
         except Exception as error:  # noqa: BLE001 - any failure means "unknown"
             logger.warning("could not read the settings of player %s: %s", player_id, error)
@@ -314,7 +337,7 @@ class MusicAssistantBackend:
                 )
             )
         value = int(milliseconds)
-        await self._client.config.save_player_config(player_id, {delay.key: value})
+        await self._command(self._client.config.save_player_config(player_id, {delay.key: value}))
 
         # Read back where the value takes effect, rather than trusting the
         # save. A linked protocol's setting is saved on the parent under the
@@ -336,7 +359,7 @@ class MusicAssistantBackend:
                 player_id,
                 target,
             )
-            await self._client.config.save_player_config(target, {key: value})
+            await self._command(self._client.config.save_player_config(target, {key: value}))
             wrong = await self._settled(places, value)
 
         if wrong:
@@ -386,18 +409,18 @@ class MusicAssistantBackend:
         return _as_int(entry.value)
 
     async def set_muted(self, player_id: str, muted: bool) -> None:
-        await self._client.players.volume_mute(player_id, bool(muted))
+        await self._command(self._client.players.volume_mute(player_id, bool(muted)))
 
     async def set_group(self, leader_id: str, member_ids: list[str]) -> None:
-        await self._client.players.group_many(
-            leader_id, [m for m in member_ids if m != leader_id]
+        await self._command(
+            self._client.players.group_many(leader_id, [m for m in member_ids if m != leader_id])
         )
 
     async def ungroup(self, player_id: str) -> None:
-        await self._client.players.ungroup(player_id)
+        await self._command(self._client.players.ungroup(player_id))
 
     async def set_volume(self, player_id: str, volume_level: int) -> None:
-        await self._client.players.volume_set(player_id, int(volume_level))
+        await self._command(self._client.players.volume_set(player_id, int(volume_level)))
 
     async def play_url(self, player_id: str, url: str) -> None:
         # Ordinary queue playback, which is what carries the stream to the
@@ -406,7 +429,9 @@ class MusicAssistantBackend:
         # id is the leader's player id, and "replace" starts it now rather than
         # queueing it behind whatever is loaded.
         try:
-            await self._client.player_queues.play_media(player_id, url, option="replace")
+            await self._command(
+                self._client.player_queues.play_media(player_id, url, option="replace")
+            )
         except Exception as error:
             # This is the one command where Music Assistant has to reach *back*
             # to us, so it is the one that exposes a wrong audio base URL — and
@@ -417,7 +442,7 @@ class MusicAssistantBackend:
             raise
 
     async def stop(self, player_id: str) -> None:
-        await self._client.players.stop(player_id)
+        await self._command(self._client.players.stop(player_id))
 
 
 def _is_a_track_fetch_failure(message: str, url: str) -> bool:

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 (fork EmilyMoonstone)
+- Rounds keep to the test track's timetable, so slow mute commands no longer slide round boundaries onto the wrong speaker.
+- Writing is all or nothing: a write refused half way puts the earlier ones back (also when applying a position).
+- Every command to Music Assistant has a time limit; a server that never answers ends the run with a message instead of hanging it.
+- A result in doubt (a muted speaker played on, or you heard something else) cannot be saved as a position.
+- After a dropped connection the page is usable again without a reload, and stops streaming the microphone.
+- Speaker test: a late answer is no longer taken for the next question.
+- The socket ignores malformed messages instead of ending the run; the live view switching off never stops a measurement.
+- "0 dB unexplained" is now said as a share ("100 % of it unexplained").
+
 ## 0.4.0 (fork EmilyMoonstone)
 - **Speaker test (by ear)**: each speaker plays on its own, then none, and you answer each time — no hurry. It finds a speaker that keeps playing when muted.
 - Every measurement pass ends with a **silent round** (every speaker muted). Test sound heard there means a speaker does not mute: it is named by its arrival, and nothing is written — its sound would otherwise pass for the other speakers' readings.

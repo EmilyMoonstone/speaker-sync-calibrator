@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Protocol
@@ -70,6 +71,19 @@ audio route can find it."""
 
 def _resolve_url(signal_url, signal: TestSignal) -> str:
     return signal_url(signal) if callable(signal_url) else signal_url
+
+
+def _clock_for(sleep: Sleeper) -> Callable[[], float]:
+    """The clock that ``sleep`` advances: a simulator's own, or real time.
+
+    The round schedule subtracts the time its commands took. That time has to
+    be read off the clock the waiting happens on — the simulator's virtual
+    clock moves only when something waits on it.
+    """
+    owner = getattr(sleep, "__self__", None)
+    if owner is not None and hasattr(owner, "now"):
+        return lambda: float(owner.now)
+    return time.monotonic
 
 
 def _report(progress: ProgressCallback | None, **event) -> None:
@@ -197,6 +211,12 @@ class CalibrationReport:
     """
 
     problems: tuple[str, ...] = field(default=())
+
+    suspect: bool = False
+    """The measurement itself is in doubt — a muted speaker played on, or the
+    listener heard something else than a round claimed. Nothing was written,
+    and the result must not be saved as a position either: applying it later
+    would write what the run itself refused to."""
 
     verifications: dict[str, "PlayerVerification"] = field(default_factory=dict)
     """Per speaker, how far it moved against how far it was asked to.
@@ -449,10 +469,18 @@ async def measure_once(
 
     await recorder.start(signal)
     audible: str | None = opening
+    # The rounds follow the track's own timetable. Sleeping a round's length
+    # after each round's mute commands would add every command's latency to
+    # every later round boundary, and with enough speakers on a slow server
+    # the boundaries slide past the guard chirps onto the wrong speaker.
+    clock = _clock_for(sleep)
+    spent = 0.0
+    due = cfg.settle_seconds
 
     try:
         await backend.play_url(leader, _resolve_url(signal_url, signal))
         for index, plan in enumerate(rounds):
+            began = clock()
             if plan.is_silent:
                 for player_id in player_ids if audible is None else [audible]:
                     await backend.set_muted(player_id, True)
@@ -477,10 +505,11 @@ async def measure_once(
             )
 
             # The first round also absorbs the stream's own start-up delay.
-            round_seconds = cfg.chirps_per_round * cfg.period_seconds
-            if index == 0:
-                round_seconds += cfg.settle_seconds
-            await sleep(round_seconds)
+            spent += clock() - began
+            due += cfg.chirps_per_round * cfg.period_seconds
+            wait = max(0.0, due - spent)
+            await sleep(wait)
+            spent += wait
     finally:
         # Each step on its own: a recorder that is gone — the browser was
         # closed — must not leave every speaker stopped mid-track and muted.
@@ -926,9 +955,20 @@ async def apply_solution(
     """
     corrections = solution.changed() if only_changed else solution.writable()
     applied: list[tuple[str, int]] = []
-    for correction in corrections:
-        await backend.set_sync_adjust(correction.player_id, correction.target_adjust_ms)
-        applied.append((correction.player_id, correction.target_adjust_ms))
+    written = []
+    try:
+        for correction in corrections:
+            await backend.set_sync_adjust(correction.player_id, correction.target_adjust_ms)
+            applied.append((correction.player_id, correction.target_adjust_ms))
+            written.append(correction)
+    except BaseException:
+        # All or nothing: a room half corrected is worse than one not touched,
+        # and nobody would get a report saying which half. Put back what went
+        # in, as far as the server lets us, and let the failure through.
+        for correction in reversed(written):
+            with contextlib.suppress(Exception):
+                await backend.set_sync_adjust(correction.player_id, correction.current_adjust_ms)
+        raise
     return tuple(applied)
 
 
@@ -1503,6 +1543,7 @@ async def _calibrate(
         sign=sign,
         observed_sign=observed,
         verifications=verifications,
+        suspect=bool(flagged or leaks),
         # A fault present in both passes reports itself twice; the reader
         # learns nothing from the repetition. dict preserves first-seen order.
         problems=tuple(dict.fromkeys(problems)),
@@ -1839,7 +1880,8 @@ async def speaker_test(
     leader = player_ids[0]
     # Long enough for every step to wait its full time; the track is
     # stopped as soon as the last answer is in.
-    steps = len(players) + 1
+    # One step's worth of margin: each step also spends time on its mute.
+    steps = len(players) + 2
     chirps = min(512, int(steps * step_seconds / cfg.period_seconds) + 4)
     signal = cfg.build_signal(chirps)
 

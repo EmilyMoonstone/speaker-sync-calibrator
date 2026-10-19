@@ -326,8 +326,8 @@ class BrowserRecorder:
         self._timeout = RECORDING_TIMEOUT_FLOOR_SECONDS
         self._signal: TestSignal | None = None
         self._monitor: LiveMonitor | None = None
-        self.answers: asyncio.Queue[bool] = asyncio.Queue()
-        """Answers to the speaker test's questions, in the order given."""
+        self.answers: asyncio.Queue[tuple[int | None, bool]] = asyncio.Queue()
+        """Answers to the speaker test's questions: (question id, answer)."""
 
         self.human_feedback: list[dict] = []
         """What the person holding the phone said about the rounds, in order.
@@ -381,11 +381,20 @@ class BrowserRecorder:
         return np.concatenate(self._chunks), self._sample_rate
 
     def feed(self, payload: bytes) -> None:
-        chunk = np.frombuffer(payload, dtype=np.float32).astype(np.float64)
+        # A frame cut mid-sample is trimmed rather than allowed to raise: the
+        # exception would end the socket loop, and with it the measurement.
+        usable = len(payload) - len(payload) % 4
+        if usable <= 0:
+            return
+        chunk = np.frombuffer(payload[:usable], dtype=np.float32).astype(np.float64)
         self._chunks.append(chunk)
         if self._monitor is not None and self._live is not None:
-            for reading in self._monitor.feed(chunk):
-                self._live({"type": "live", **reading.to_dict()})
+            try:
+                for reading in self._monitor.feed(chunk):
+                    self._live({"type": "live", **reading.to_dict()})
+            except Exception:  # noqa: BLE001 - the live view is a nicety
+                logger.exception("live analysis failed; switching it off for this pass")
+                self._monitor = None
 
     def complete(self, sample_rate: int) -> None:
         self._sample_rate = int(sample_rate)
@@ -656,7 +665,7 @@ def create_app(state: AppState) -> web.Application:
         return web.json_response(
             {
                 "profiles": [_describe_profile(p) for p in store().list()],
-                "can_save": state.last_report is not None,
+                "can_save": state.last_report is not None and not state.last_report.suspect,
             }
         )
 
@@ -669,7 +678,22 @@ def create_app(state: AppState) -> web.Application:
                 ),
                 content_type="text/plain",
             )
-        payload = await request.json()
+        if state.last_report.suspect:
+            raise web.HTTPBadRequest(
+                text=say(
+                    en="This result is in doubt — a speaker did not mute, or a round did not "
+                    "sound right — so it is not saved. Fix that and calibrate again.",
+                    ru="Этот результат под сомнением — колонка не заглушалась или круг звучал "
+                    "не так, — поэтому он не сохраняется. Исправьте это и откалибруйте снова.",
+                ),
+                content_type="text/plain",
+            )
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            raise web.HTTPBadRequest(text="Expected JSON.", content_type="text/plain") from None
+        if not isinstance(payload, dict):
+            raise web.HTTPBadRequest(text="Expected an object.", content_type="text/plain")
         name = str(payload.get("name", "")).strip()
         if not name:
             raise web.HTTPBadRequest(
@@ -753,7 +777,10 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
     async def pump() -> None:
         while True:
             message = await outbox.get()
-            with contextlib.suppress(ConnectionResetError):
+            # A socket that is closing raises RuntimeError rather than a
+            # connection error; either way the message has nowhere to go, and
+            # the pump has to survive it to deliver the ones after.
+            with contextlib.suppress(ConnectionResetError, RuntimeError):
                 await socket.send_json(message)
 
     pump_task = asyncio.create_task(pump())
@@ -770,16 +797,22 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 payload = json.loads(message.data)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(payload, dict):
+                continue
 
             kind = payload.get("type")
             if kind == "recording_done":
-                recorder.complete(payload.get("sample_rate", 48000))
+                rate = payload.get("sample_rate", 48000)
+                recorder.complete(int(rate) if _is_number(rate) and rate > 0 else 48000)
             elif kind == "recording_format":
-                if isinstance(payload.get("sample_rate"), (int, float)):
+                if _is_number(payload.get("sample_rate")):
                     recorder.set_format(int(payload["sample_rate"]))
             elif kind == "speaker_test_answer":
                 if isinstance(payload.get("ok"), bool):
-                    recorder.answers.put_nowait(payload["ok"])
+                    question = payload.get("question_id")
+                    recorder.answers.put_nowait(
+                        (question if _is_number(question) else None, payload["ok"])
+                    )
             elif kind == "human_feedback":
                 if isinstance(payload.get("player_id"), str) and isinstance(payload.get("ok"), bool):
                     recorder.note_feedback(payload["player_id"], payload["ok"])
@@ -787,8 +820,9 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
                 if running is not None and not running.done():
                     outbox.put_nowait({"type": "error", "message": _busy_message()})
                 else:
-                    if isinstance(payload.get("chirps_per_round"), int):
-                        state.set_chirps_per_round(payload["chirps_per_round"])
+                    chirps = payload.get("chirps_per_round")
+                    if isinstance(chirps, int) and not isinstance(chirps, bool):
+                        state.set_chirps_per_round(chirps)
                     running = asyncio.create_task(_run_job(kind, state, recorder, outbox))
     finally:
         pump_task.cancel()
@@ -798,6 +832,11 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
             await pump_task
 
     return socket
+
+
+def _is_number(value) -> bool:
+    """A JSON number — not a bool, which Python counts as an int."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 async def _run_job(
@@ -832,14 +871,25 @@ async def _run_job(
 
         if kind == "speaker_test":
 
+            asked = 0
+
             async def ask(question: dict) -> bool | None:
-                outbox.put_nowait({"type": "speaker_test_ask", **question})
-                try:
-                    return await asyncio.wait_for(
-                        recorder.answers.get(), SPEAKER_TEST_STEP_SECONDS
-                    )
-                except TimeoutError:
-                    return None
+                # Numbered, so a late answer to a question that already timed
+                # out is not taken as the answer to the next one.
+                nonlocal asked
+                asked += 1
+                outbox.put_nowait({"type": "speaker_test_ask", "question_id": asked, **question})
+                deadline = asyncio.get_running_loop().time() + SPEAKER_TEST_STEP_SECONDS
+                while True:
+                    left = deadline - asyncio.get_running_loop().time()
+                    if left <= 0:
+                        return None
+                    try:
+                        question_id, ok = await asyncio.wait_for(recorder.answers.get(), left)
+                    except TimeoutError:
+                        return None
+                    if question_id in (None, asked):
+                        return ok
 
             result = await speaker_test(
                 speakers, state.signal_url, ask, config=state.session_config

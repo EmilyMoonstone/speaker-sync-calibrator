@@ -858,3 +858,75 @@ async def test_the_speaker_test_asks_over_the_socket_and_reports(state):
         "bt": True,
     }
     assert any("Гостиная (ресивер)" in p for p in done["problems"])
+
+
+async def test_a_result_in_doubt_cannot_be_saved_as_a_position(state, tmp_path):
+    """The run wrote nothing because a muted speaker played on. Saving it
+    and applying it later would write exactly what the run refused to."""
+    server = state.backend
+    with_store(state, tmp_path)
+    server.mute_is_cosmetic = {"bt"}
+    state.last_report = await calibrate(
+        server, SimulatedRecorder(server), sleep=server.clock.sleep
+    )
+    assert state.last_report.suspect
+
+    client = await client_for(create_app(state))
+    try:
+        listed = await (await client.get("/api/profiles")).json()
+        response = await client.post("/api/profiles", json={"name": "Flur"})
+        text = await response.text()
+    finally:
+        await client.close()
+
+    assert listed["can_save"] is False
+    assert response.status == 400 and "in doubt" in text
+    assert state.store.list() == []
+
+
+async def test_odd_socket_messages_are_ignored_not_fatal(state):
+    """A JSON value that is not an object, or a number that is a bool, used
+    to end the socket loop — and with it whatever was running."""
+    client = await client_for(create_app(state))
+    try:
+        socket = await client.ws_connect("/ws")
+        await socket.send_str("[1, 2, 3]")
+        await socket.send_str("42")
+        await socket.send_json({"type": "recording_format", "sample_rate": True})
+        await socket.send_json({"type": "listen", "chirps_per_round": True})
+        message = await socket.receive_json(timeout=5)
+        await socket.close()
+    finally:
+        await client.close()
+
+    assert message["type"] == "listening"
+    assert state.session_config.chirps_per_round == 5
+
+
+async def test_a_late_answer_is_not_taken_for_the_next_question(state):
+    """An answer carrying another question's number — one that arrived after
+    its question timed out — is dropped, not given to the question asked now."""
+    client = await client_for(create_app(state))
+    answers = []
+    try:
+        socket = await client.ws_connect("/ws")
+        await socket.send_json({"type": "speaker_test"})
+        while True:
+            message = await socket.receive_json(timeout=5)
+            if message["type"] == "speaker_test_ask":
+                current = message["question_id"]
+                # A stale "no" for a question long gone, then the real answer.
+                await socket.send_json(
+                    {"type": "speaker_test_answer", "question_id": current + 50, "ok": False}
+                )
+                await socket.send_json(
+                    {"type": "speaker_test_answer", "question_id": current, "ok": True}
+                )
+            elif message["type"] == "speaker_test_done":
+                answers = message
+                break
+        await socket.close()
+    finally:
+        await client.close()
+
+    assert answers["passed"] is True

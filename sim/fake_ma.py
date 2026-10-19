@@ -106,6 +106,10 @@ class FakeMusicAssistant:
     plays: int = field(default=0, init=False)
     """How many times playback has started."""
 
+    command_seconds: float = 0.0
+    """How long a mute command takes to come back, as a slow server's would.
+    It takes effect when it returns."""
+
     no_delay: set[str] = field(default_factory=set)
     """Speakers that offer no delay setting at all — a phone app that
     compensates its own output latency, say. They still play, mute and group;
@@ -220,6 +224,8 @@ class FakeMusicAssistant:
             await self.clock.sleep(self.reload_seconds)
 
     async def set_muted(self, player_id: str, muted: bool) -> None:
+        if self.command_seconds:
+            await self.clock.sleep(self.command_seconds)
         self.log.append(("mute", player_id, muted))
         # Accepted and ignored, which is what makes this failure so quiet.
         if player_id in self.ignores_mute:

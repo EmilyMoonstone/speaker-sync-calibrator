@@ -477,7 +477,14 @@ function sendFeedback(ok) {
 
 // ------------------------------------------------------------ speaker test
 
+let askedQuestion = null;
+
+function socketOpen() {
+  return socket && socket.readyState === WebSocket.OPEN;
+}
+
 function askListener(question) {
+  askedQuestion = question.question_id;
   const alone = question.step === 'alone';
   el('ask-question').textContent = alone ? t('ask_alone', question) : t('ask_silence');
   el('ask-yes').textContent = t(alone ? 'ask_alone_yes' : 'ask_silence_yes');
@@ -489,10 +496,10 @@ function askListener(question) {
 }
 
 function answerListener(ok) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  if (!socketOpen()) return;
   el('ask-yes').disabled = true;
   el('ask-no').disabled = true;
-  socket.send(JSON.stringify({ type: 'speaker_test_answer', ok }));
+  socket.send(JSON.stringify({ type: 'speaker_test_answer', question_id: askedQuestion, ok }));
 }
 
 function speakerTestDone(message) {
@@ -505,6 +512,10 @@ function speakerTestDone(message) {
 }
 
 function speakerTest() {
+  if (!socketOpen()) {
+    setStatus(t('disconnected'), 'err');
+    return;
+  }
   setBusy(true);
   setProgress(0);
   showLive(false);
@@ -579,8 +590,18 @@ function connect() {
   // The player list owns the status line: it is the thing that knows whether
   // a calibration can actually start. Announcing "ready" here would overwrite
   // an explanation of why the buttons are disabled.
-  socket.onopen = () => refreshPlayers();
+  socket.onopen = () => {
+    // A job does not survive its socket — the server cancels it and puts the
+    // speakers back — so a new connection starts with nothing running.
+    // Left busy, every button stayed disabled until the page was reloaded.
+    recording = false;
+    el('ask').hidden = true;
+    setBusy(false);
+    refreshPlayers();
+  };
   socket.onclose = () => {
+    // Stop streaming the microphone: there is no recording to feed any more.
+    recording = false;
     setStatus(t('disconnected'), 'err');
     setBusy(true);
     setTimeout(connect, 2000);
@@ -983,6 +1004,10 @@ function showCheck(check) {
 }
 
 async function listen() {
+  if (!socketOpen()) {
+    setStatus(t('disconnected'), 'err');
+    return;
+  }
   setBusy(true);
   setStatus(t('listening'), 'live');
   socket.send(JSON.stringify({ type: 'listen' }));
@@ -1079,6 +1104,10 @@ function escapeHtml(value) {
 // --------------------------------------------------------------------- boot
 
 async function start(kind) {
+  if (!socketOpen()) {
+    setStatus(t('disconnected'), 'err');
+    return;
+  }
   try {
     setBusy(true);
     setProgress(0);

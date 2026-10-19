@@ -207,7 +207,7 @@ def check_together(
         problems.append(
             say(
                 en=f"with every speaker playing the room does not sound like the sum of the "
-                f"speakers measured one by one ({residual_db:.0f} dB unexplained) — a "
+                f"speakers measured one by one ({_share(residual_db)} of it unexplained) — a "
                 "speaker probably stayed silent or played something else in that round",
                 ru=f"когда играют все, звук не похож на сумму колонок по одной "
                 f"({residual_db:.0f} дБ не объяснено) — похоже, какая-то колонка в этом "
@@ -216,6 +216,12 @@ def check_together(
         )
 
     return TogetherCheck(heard_ms, solo_spread, residual_db, tuple(problems))
+
+
+def _share(residual_db: float) -> str:
+    """An energy ratio in dB as a share a reader can picture: "-1 dB" became
+    "0 dB unexplained" once rounded, which read as nothing at all."""
+    return f"{min(100.0, 100.0 * 10.0 ** (residual_db / 10.0)):.0f} %"
 
 
 def _read(signal: np.ndarray, start: float, length: int) -> np.ndarray | None:

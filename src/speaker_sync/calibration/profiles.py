@@ -29,7 +29,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from speaker_sync.calibration.session import CalibrationReport, solution_problems
+from speaker_sync.calibration.session import (
+    CalibrationReport,
+    apply_solution,
+    solution_problems,
+)
 from speaker_sync.calibration.solver import CalibrationSolution, PlayerMeasurement, solve
 from speaker_sync.i18n import say
 from speaker_sync.ma.backend import SpeakerBackend
@@ -363,10 +367,8 @@ async def apply_profile(backend: SpeakerBackend, profile: Profile) -> ApplyOutco
         )
 
     solution = solve(measurements, sign=profile.sign)
-    applied = []
-    for correction in solution.changed():
-        await backend.set_sync_adjust(correction.player_id, correction.target_adjust_ms)
-        applied.append((correction.player_id, correction.target_adjust_ms))
+    # All or nothing, as for a calibration: a failed write puts back the rest.
+    applied = list(await apply_solution(backend, solution))
 
     return ApplyOutcome(
         applied=tuple(applied),
