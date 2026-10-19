@@ -40,6 +40,14 @@ OUTLIER_TOLERANCE_MS = 2.0
 TOGETHER = "*"
 """Player id of the round in which every speaker plays at once."""
 
+SILENT = "-"
+"""Player id of the round in which every speaker is muted.
+
+Nothing should be heard in it. A chirp that is heard comes from a speaker
+that reports itself muted and plays on — and that speaker was then also
+heard in every other speaker's round, where the measurement takes the first
+arrival it hears for theirs."""
+
 
 @dataclass(frozen=True)
 class RoundPlan:
@@ -52,6 +60,9 @@ class RoundPlan:
     is_together: bool = False
     """Every speaker audible at once — the check that the solo readings add up
     to what a listener actually hears. See :mod:`speaker_sync.calibration.together`."""
+
+    is_silent: bool = False
+    """Every speaker muted — the check that muting really silences them."""
 
     @property
     def last_chirp(self) -> int:
@@ -87,6 +98,11 @@ class MeasurementAnalysis:
 
     problems: tuple[str, ...] = field(default=())
 
+    silence_heard_ms: tuple[float, ...] = ()
+    """Arrivals heard in the round in which every speaker was muted, on the
+    same scale as the readings — so a leak can be matched to the speaker it
+    arrives like. Empty when nothing was heard, as it should be."""
+
     @property
     def is_usable(self) -> bool:
         return len(self.readings) >= 2 and not self.problems
@@ -98,6 +114,7 @@ def plan_rounds(
     *,
     chirps_per_round: int = DEFAULT_CHIRPS_PER_ROUND,
     together: bool = False,
+    silent: bool = False,
 ) -> list[RoundPlan]:
     """Lay out the session: reference, every other speaker, reference again.
 
@@ -127,6 +144,17 @@ def plan_rounds(
                 first_chirp=len(order) * chirps_per_round,
                 chirp_count=chirps_per_round,
                 is_together=True,
+            )
+        )
+    if silent:
+        # Last, never first: the analysis takes the first chirp it hears as
+        # the track's chirp zero, so the opening round has to be audible.
+        rounds.append(
+            RoundPlan(
+                player_id=SILENT,
+                first_chirp=total_chirps(rounds),
+                chirp_count=chirps_per_round,
+                is_silent=True,
             )
         )
     return rounds
@@ -162,7 +190,7 @@ def analyze(
     # to the right point in the session.
     per_round: list[tuple[RoundPlan, list[tuple[int, float]]]] = []
     for plan in rounds:
-        if plan.is_together:
+        if plan.is_together or plan.is_silent:
             continue  # not a reading of any one speaker; checked separately
         readings_in_round = [
             (index, by_chirp[index].residual)
@@ -223,12 +251,21 @@ def analyze(
             )
         )
 
+    silence_heard = [
+        samples_to_ms(by_chirp[index].residual - drift_rate * (index - drift_origin), sample_rate)
+        for plan in rounds
+        if plan.is_silent
+        for index in plan.measured_chirps(guard_chirps)
+        if index in by_chirp
+    ]
+
     return MeasurementAnalysis(
         readings=readings,
         drift_ms=samples_to_ms(drift_total, sample_rate),
         drift_per_chirp=drift_rate,
         drift_origin=drift_origin,
         problems=tuple(problems),
+        silence_heard_ms=tuple(silence_heard),
     )
 
 

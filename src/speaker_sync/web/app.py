@@ -40,8 +40,10 @@ from speaker_sync.calibration.session import (
     CalibrationReport,
     SessionConfig,
     calibrate,
+    SPEAKER_TEST_STEP_SECONDS,
     check_alignment,
     play_listening_test,
+    speaker_test,
 )
 from speaker_sync.calibration.validate import determine_sign
 from speaker_sync.dsp.signals import (
@@ -324,6 +326,9 @@ class BrowserRecorder:
         self._timeout = RECORDING_TIMEOUT_FLOOR_SECONDS
         self._signal: TestSignal | None = None
         self._monitor: LiveMonitor | None = None
+        self.answers: asyncio.Queue[bool] = asyncio.Queue()
+        """Answers to the speaker test's questions, in the order given."""
+
         self.human_feedback: list[dict] = []
         """What the person holding the phone said about the rounds, in order.
 
@@ -772,10 +777,13 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
             elif kind == "recording_format":
                 if isinstance(payload.get("sample_rate"), (int, float)):
                     recorder.set_format(int(payload["sample_rate"]))
+            elif kind == "speaker_test_answer":
+                if isinstance(payload.get("ok"), bool):
+                    recorder.answers.put_nowait(payload["ok"])
             elif kind == "human_feedback":
                 if isinstance(payload.get("player_id"), str) and isinstance(payload.get("ok"), bool):
                     recorder.note_feedback(payload["player_id"], payload["ok"])
-            elif kind in {"calibrate", "probe_sign", "check", "listen"}:
+            elif kind in {"calibrate", "probe_sign", "check", "listen", "speaker_test"}:
                 if running is not None and not running.done():
                     outbox.put_nowait({"type": "error", "message": _busy_message()})
                 else:
@@ -805,6 +813,8 @@ async def _run_job(
     state.busy = True
     progress = outbox.put_nowait
     recorder.human_feedback.clear()
+    while not recorder.answers.empty():
+        recorder.answers.get_nowait()
     try:
         # One view of the speakers for the whole job, switches already applied.
         speakers = state.speakers
@@ -818,6 +828,34 @@ async def _run_job(
                 on_playing=lambda _: outbox.put_nowait({"type": "listening"}),
             )
             outbox.put_nowait({"type": "listening_done", "problems": problems})
+            return
+
+        if kind == "speaker_test":
+
+            async def ask(question: dict) -> bool | None:
+                outbox.put_nowait({"type": "speaker_test_ask", **question})
+                try:
+                    return await asyncio.wait_for(
+                        recorder.answers.get(), SPEAKER_TEST_STEP_SECONDS
+                    )
+                except TimeoutError:
+                    return None
+
+            result = await speaker_test(
+                speakers, state.signal_url, ask, config=state.session_config
+            )
+            outbox.put_nowait(
+                {
+                    "type": "speaker_test_done",
+                    "passed": result.passed,
+                    "problems": result.problems,
+                    "alone": [
+                        {"player_id": pid, "name": result.names.get(pid, pid), "ok": ok}
+                        for pid, ok in result.alone.items()
+                    ],
+                    "silent": result.silent,
+                }
+            )
             return
 
         if kind == "check":

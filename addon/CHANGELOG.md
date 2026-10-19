@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 (fork EmilyMoonstone)
+- **Speaker test (by ear)**: each speaker plays on its own, then none, and you answer each time — no hurry. It finds a speaker that keeps playing when muted.
+- Every measurement pass ends with a **silent round** (every speaker muted). Test sound heard there means a speaker does not mute: it is named by its arrival, and nothing is written — its sound would otherwise pass for the other speakers' readings.
+
 ## 0.3.1 (fork EmilyMoonstone)
 - Fix: a delay written to a speaker behind a universal player was reported as "did not arrive" although it had — the read-back took a missing value for 0 and did not wait for Music Assistant to apply it. It now waits up to 3 s and ignores places that report nothing.
 - A check no longer blames the track format for a speaker whose delay jumped between its two passes, and says which format each finding comes from.

@@ -116,6 +116,20 @@ const STRINGS = {
     mic_test_note: 'Microphone open. Play something and watch the level; it should move but not turn red.',
     refining: 'Correcting the remaining difference …',
     measuring_attempt: (v) => `Measuring (${v.attempt} of ${v.planned}) …`,
+    speaker_test: 'Speaker test (by ear)',
+    speaker_test_note: '“Speaker test” plays each speaker on its own and then none, and asks'
+      + ' you each time — take your time. It finds a speaker that keeps playing when muted,'
+      + ' which would otherwise pass for the others in a measurement. Best run before calibrating.',
+    speaker_test_running: 'Speaker test — listen, then answer.',
+    ask_alone: (v) => `${v.index} of ${v.count}: do you hear only «${v.name}»?`,
+    ask_alone_yes: 'Yes, only this one',
+    ask_alone_no: 'No — another one too, or nothing',
+    ask_silence: 'Every speaker is muted now. Is it silent?',
+    ask_silence_yes: 'Yes, silent',
+    ask_silence_no: 'No, I still hear it',
+    speaker_test_passed: 'Every speaker played on its own and fell silent when muted —'
+      + ' the measurement can trust its rounds.',
+    silence_round: 'nobody (all muted)',
     ready_pill: 'ready',
     not_taking_part: 'not taking part',
     switch_off: 'switch off',
@@ -246,6 +260,20 @@ const STRINGS = {
     mic_test_note: 'Микрофон открыт. Включите что-нибудь и следите за уровнем: он должен двигаться, но не краснеть.',
     refining: 'Доправляю оставшуюся разницу …',
     measuring_attempt: (v) => `Измеряю (${v.attempt} из ${v.planned}) …`,
+    speaker_test: 'Проверка колонок (на слух)',
+    speaker_test_note: '«Проверка колонок» включает каждую колонку по отдельности, затем ни одной,'
+      + ' и каждый раз спрашивает вас — не торопитесь. Она находит колонку, которая играет при'
+      + ' заглушении и иначе выдавала бы себя за другие при замере. Лучше перед калибровкой.',
+    speaker_test_running: 'Проверка колонок — послушайте и ответьте.',
+    ask_alone: (v) => `${v.index} из ${v.count}: слышна только «${v.name}»?`,
+    ask_alone_yes: 'Да, только эта',
+    ask_alone_no: 'Нет — ещё другая или ничего',
+    ask_silence: 'Сейчас все колонки заглушены. Тишина?',
+    ask_silence_yes: 'Да, тишина',
+    ask_silence_no: 'Нет, всё ещё слышно',
+    speaker_test_passed: 'Каждая колонка играла отдельно и замолкала при заглушении —'
+      + ' замеру можно доверять.',
+    silence_round: 'никто (все заглушены)',
     ready_pill: 'готова',
     not_taking_part: 'не участвует',
     switch_off: 'выключить',
@@ -328,6 +356,7 @@ let runnable = false;  // enough speakers are switched on to run one
 // to switch it back on again.
 function refreshControls() {
   el('run').disabled = busy || !runnable;
+  el('speakertest').disabled = busy || !runnable;
   el('check').disabled = busy || !runnable;
   el('listen').disabled = busy || !runnable;
   el('refresh').disabled = busy;
@@ -400,7 +429,9 @@ function resetLive() {
 }
 
 function liveName(playerId) {
-  return playerId === '*' ? t('all_together') : nameOf(playerId);
+  if (playerId === '*') return t('all_together');
+  if (playerId === '-') return t('silence_round');
+  return nameOf(playerId);
 }
 
 function onRound(message) {
@@ -442,6 +473,43 @@ function sendFeedback(ok) {
   el('human-ok').disabled = true;
   el('human-wrong').disabled = true;
   setStatus(t(ok ? 'human_thanks_ok' : 'human_thanks_wrong'), ok ? 'live' : 'err');
+}
+
+// ------------------------------------------------------------ speaker test
+
+function askListener(question) {
+  const alone = question.step === 'alone';
+  el('ask-question').textContent = alone ? t('ask_alone', question) : t('ask_silence');
+  el('ask-yes').textContent = t(alone ? 'ask_alone_yes' : 'ask_silence_yes');
+  el('ask-no').textContent = t(alone ? 'ask_alone_no' : 'ask_silence_no');
+  el('ask-yes').disabled = false;
+  el('ask-no').disabled = false;
+  el('ask').hidden = false;
+  el('ask').scrollIntoView({ block: 'nearest' });
+}
+
+function answerListener(ok) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  el('ask-yes').disabled = true;
+  el('ask-no').disabled = true;
+  socket.send(JSON.stringify({ type: 'speaker_test_answer', ok }));
+}
+
+function speakerTestDone(message) {
+  el('ask').hidden = true;
+  setStatus(
+    message.passed ? t('speaker_test_passed') : message.problems.join('\n\n'),
+    message.passed ? 'ok' : 'err',
+  );
+  setBusy(false);
+}
+
+function speakerTest() {
+  setBusy(true);
+  setProgress(0);
+  showLive(false);
+  setStatus(t('speaker_test_running'), 'live');
+  socket.send(JSON.stringify({ type: 'speaker_test' }));
 }
 
 let micTesting = false;
@@ -538,6 +606,14 @@ function handle(message) {
       onLive(message);
       break;
 
+    case 'speaker_test_ask':
+      askListener(message);
+      break;
+
+    case 'speaker_test_done':
+      speakerTestDone(message);
+      break;
+
     case 'record_stop':
       recording = false;
       el('human').hidden = true;
@@ -589,6 +665,7 @@ function handle(message) {
 
     case 'error':
       setStatus(t('error') + message.message, 'err');
+      el('ask').hidden = true;
       setBusy(false);
       break;
   }
@@ -1030,6 +1107,9 @@ el('run').addEventListener('click', () => start('calibrate'));
 el('check').addEventListener('click', () => start('check'));
 el('listen').addEventListener('click', listen);
 el('mictest').addEventListener('click', toggleMicTest);
+el('speakertest').addEventListener('click', speakerTest);
+el('ask-yes').addEventListener('click', () => answerListener(true));
+el('ask-no').addEventListener('click', () => answerListener(false));
 el('human-ok').addEventListener('click', () => sendFeedback(true));
 el('human-wrong').addEventListener('click', () => sendFeedback(false));
 el('save').addEventListener('click', saveProfile);

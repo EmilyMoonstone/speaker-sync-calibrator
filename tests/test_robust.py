@@ -145,3 +145,42 @@ def test_combining_names_the_wandering_speaker_even_when_it_is_listed_first():
     # Against a: -40, -20 and -30 ms — 20 ms of wandering.
     assert set(combined.unstable()) == {"wobbly"}
     assert combined.unstable()["wobbly"] == pytest.approx(20.0)
+
+
+async def test_a_speaker_that_plays_on_when_muted_is_caught_in_the_silent_round():
+    """It reports itself muted, so the mute check is satisfied — and it is
+    heard in every other round. Only a round with nothing meant to play can
+    tell; the run names it by its arrival and writes nothing."""
+    server, recorder, clock = sendspin_server()
+    server.mute_is_cosmetic = {"bt"}
+
+    report = await calibrate(server, recorder, sleep=clock.sleep)
+
+    assert server.writes == []
+    leak = [p for p in report.problems if "every speaker was muted" in p]
+    assert len(leak) == 1
+    assert "Спальня (Bluetooth)" in leak[0] and "Nothing was written" in leak[0]
+
+
+async def test_an_earlier_speaker_leaking_into_a_later_ones_round_cannot_pass_as_a_reading():
+    """The live suspicion: the PC heard in the round of a speaker that is
+    later than it. That round then "measures" the PC, the two look equal,
+    and nothing about the numbers says so — except the silent round."""
+    server, recorder, clock = sendspin_server()
+    server.mute_is_cosmetic = {"esp32"}  # the earliest, heard in every round
+
+    report = await calibrate(server, recorder, sleep=clock.sleep)
+
+    latencies = report.before.latencies_ms
+    assert max(latencies.values()) - min(latencies.values()) < 1.0  # all "the same"
+    assert server.writes == []
+    assert any("every speaker was muted" in p for p in report.problems)
+
+
+async def test_a_silent_round_that_is_silent_raises_nothing():
+    server, recorder, clock = sendspin_server()
+
+    report = await calibrate(server, recorder, sleep=clock.sleep)
+
+    assert report.before.analysis.silence_heard_ms == ()
+    assert not any("every speaker was muted" in p for p in report.problems)

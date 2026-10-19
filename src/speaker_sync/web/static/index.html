@@ -124,7 +124,9 @@
   #live-tally td { font-size: 13px; }
   .human { flex-direction: column; align-items: flex-start; }
   .human > span:last-child { display: flex; gap: 8px; flex-wrap: wrap; }
-  .num { font-variant-numeric: tabular-nums; }
+  .askq { font-size: 17px; font-weight: 600; margin: 0 0 12px; }
+  .askrow { display: flex; gap: 10px; flex-wrap: wrap; }
+  .askrow button { flex: 1 1 140px; margin: 0; }
 
   .bar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; margin-top: 10px; }
   .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .35s ease; }
@@ -269,12 +271,22 @@
       <span class="sub" id="chirps-note">&nbsp;</span>
     </div>
 
+    <div class="live" id="ask" hidden>
+      <p id="ask-question" class="askq"></p>
+      <div class="askrow">
+        <button id="ask-yes"></button>
+        <button id="ask-no" class="secondary"></button>
+      </div>
+    </div>
+
     <div style="margin-top:14px">
+      <button id="speakertest" class="secondary" data-i18n="speaker_test"></button>
       <button id="run" data-i18n="run"></button>
       <button id="check" class="secondary" data-i18n="check"></button>
       <button id="listen" class="secondary" data-i18n="listen"></button>
       <button id="mictest" class="secondary" data-i18n="mic_test"></button>
     </div>
+    <p class="note" data-i18n="speaker_test_note"></p>
     <p class="note" data-i18n="run_note"></p>
     <p class="note" data-i18n="check_note"></p>
     <p class="note" data-i18n="listen_note"></p>

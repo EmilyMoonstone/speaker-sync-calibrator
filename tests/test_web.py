@@ -825,3 +825,36 @@ async def test_a_player_without_a_delay_is_listed_as_a_reference(state):
     assert pixel["measured"] is True
     assert pixel["calibratable"] is False
     assert pixel["excluded_because"] is None
+
+
+async def test_the_speaker_test_asks_over_the_socket_and_reports(state):
+    """Question by question: each speaker alone, then the silence. The page
+    answers each before the next is put, and the result comes back whole."""
+    client = await client_for(create_app(state))
+    asked = []
+    try:
+        socket = await client.ws_connect("/ws")
+        await socket.send_json({"type": "speaker_test"})
+        while True:
+            message = await socket.receive_json(timeout=5)
+            if message["type"] == "speaker_test_ask":
+                asked.append(message)
+                # "no" for the receiver, "yes" for everything else
+                await socket.send_json(
+                    {"type": "speaker_test_answer", "ok": message.get("player_id") != "avr"}
+                )
+            elif message["type"] == "speaker_test_done":
+                done = message
+                break
+        await socket.close()
+    finally:
+        await client.close()
+
+    assert [m["step"] for m in asked] == ["alone", "alone", "alone", "silence"]
+    assert done["passed"] is False and done["silent"] is True
+    assert {a["player_id"]: a["ok"] for a in done["alone"]} == {
+        "esp32": True,
+        "avr": False,
+        "bt": True,
+    }
+    assert any("Гостиная (ресивер)" in p for p in done["problems"])

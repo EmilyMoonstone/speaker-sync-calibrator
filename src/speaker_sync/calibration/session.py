@@ -24,6 +24,7 @@ from typing import Protocol
 import numpy as np
 
 from speaker_sync.calibration.measure import (
+    SILENT,
     TOGETHER,
     MeasurementAnalysis,
     RoundPlan,
@@ -124,6 +125,15 @@ class SessionConfig:
     """
 
     max_measure_passes: int = 3
+
+    silence_round: bool = True
+    """End every pass with a round in which every speaker is muted.
+
+    A speaker that reports itself muted and plays on is heard in every other
+    speaker's round; the measurement takes the first arrival it hears, so
+    the others then "measure" like that speaker and the result looks
+    plausible. The silent round is the one place such a leak cannot hide.
+    """
     """Ceiling when the passes disagree or a speaker went unheard in one."""
 
     refine: bool = True
@@ -235,6 +245,49 @@ def _need_two(players: Sequence[PlayerInfo]) -> None:
                 ru="нужно хотя бы две колонки, которые звучат и умеют заглушаться",
             )
         )
+
+
+LEAK_MATCH_MS = 3.0
+"""How close a leak's arrival must be to a speaker's reading to name it."""
+
+
+def leak_problems(
+    passes: Sequence[MeasurementPass], players: Sequence[PlayerInfo], *, wrote: bool
+) -> list[str]:
+    """Say so when the muted round was not silent, and who it sounded like."""
+    leaked = [pass_ for pass_ in passes if pass_.analysis.silence_heard_ms]
+    if not leaked:
+        return []
+    names = {p.player_id: p.name for p in players}
+    candidates: list[str] = []
+    for pass_ in leaked:
+        heard = float(np.median(pass_.analysis.silence_heard_ms))
+        for pid, latency in pass_.latencies_ms.items():
+            if abs(latency - heard) <= LEAK_MATCH_MS and pid not in candidates:
+                candidates.append(pid)
+    who = ", ".join(f"«{names.get(pid, pid)}»" for pid in candidates)
+    if who:
+        like_en, like_ru = f", arriving like {who}", f", и он приходил как {who}"
+    else:
+        like_en = like_ru = ""
+    return [
+        say(
+            en="in the round in which every speaker was muted, the microphone still heard the "
+            f"test sound{like_en}. A speaker does not fall silent when muted — Music Assistant "
+            "reports it muted, but it plays on — so it was heard in the other speakers' rounds "
+            "too, and their readings are partly its own. "
+            + ("" if wrote else "Nothing was written. ")
+            + "Run “Speaker test” to find out by ear which one it is, then check its mute in "
+            "Music Assistant or in its app, or switch it off here.",
+            ru="в круге, где все колонки были заглушены, микрофон всё равно слышал тестовый "
+            f"звук{like_ru}. Какая-то колонка не замолкает при заглушении — Music Assistant "
+            "считает её заглушённой, а она играет дальше, — поэтому её было слышно и в кругах "
+            "других колонок, и их отсчёты отчасти её. "
+            + ("" if wrote else "Ничего не записано. ")
+            + "Запустите «Проверку колонок», чтобы на слух найти, какая это, затем проверьте "
+            "её заглушение в Music Assistant или в её приложении, или выключите её здесь.",
+        )
+    ]
 
 
 def flagged_by_listener(recorder: Recorder) -> list[str]:
@@ -361,7 +414,11 @@ async def measure_once(
     player_ids = [p.player_id for p in players]
     reference = reference_id or player_ids[0]
     rounds = plan_rounds(
-        reference, player_ids, chirps_per_round=cfg.chirps_per_round, together=together
+        reference,
+        player_ids,
+        chirps_per_round=cfg.chirps_per_round,
+        together=together,
+        silent=cfg.silence_round,
     )
     signal = cfg.build_signal(total_chirps(rounds))
 
@@ -396,7 +453,11 @@ async def measure_once(
     try:
         await backend.play_url(leader, _resolve_url(signal_url, signal))
         for index, plan in enumerate(rounds):
-            if plan.is_together:
+            if plan.is_silent:
+                for player_id in player_ids if audible is None else [audible]:
+                    await backend.set_muted(player_id, True)
+                audible = SILENT
+            elif plan.is_together:
                 for player_id in player_ids:
                     if player_id != audible:
                         await backend.set_muted(player_id, False)
@@ -495,6 +556,9 @@ class CombinedPasses:
     missing: tuple[str, ...]
     """Speakers that went unheard in at least one pass."""
 
+    passes: tuple[MeasurementPass, ...] = ()
+    """Every pass that went into it."""
+
     def unstable(self, tolerance: float = STABILITY_TOLERANCE_MS) -> dict[str, float]:
         return {pid: v for pid, v in self.variation_ms.items() if v > tolerance}
 
@@ -514,7 +578,7 @@ def combine_passes(passes: Sequence[MeasurementPass], order: Sequence[str]) -> C
     )
     candidates = [pid for pid in order if all(pid in p.latencies_ms for p in passes)]
     if len(passes) == 1 or not candidates:
-        return CombinedPasses(first, {}, missing)
+        return CombinedPasses(first, {}, missing, tuple(passes))
 
     def relative(anchor: str) -> dict[str, list[float]]:
         values: dict[str, list[float]] = {}
@@ -553,7 +617,7 @@ def combine_passes(passes: Sequence[MeasurementPass], order: Sequence[str]) -> C
     variation = {pid: max(v) - min(v) for pid, v in values.items() if len(v) > 1}
     # The anchor varies by definition not at all against itself; it is as
     # stable as the least stable of the rest allows it to look.
-    return CombinedPasses(combined, variation, missing)
+    return CombinedPasses(combined, variation, missing, tuple(passes))
 
 
 def stability_problems(
@@ -1318,14 +1382,16 @@ async def _calibrate(
     verifications: dict[str, PlayerVerification] = {}
 
     flagged = flagged_by_listener(recorder)
+    leaks = leak_problems(combined.passes, players, wrote=False)
     while True:
         solution = solve(measurements, sign=sign)
         if not corrected_sign:
             problems.extend(solution_problems(solution))
-        if flagged:
-            # The listener heard something other than what the round claimed.
-            # Writing corrections computed from it could only make things
-            # worse, so the run reports and stops here.
+        if flagged or leaks:
+            # The listener heard something other than what the round claimed,
+            # or a muted speaker played on. Corrections computed from that
+            # could only make things worse, so the run reports and stops.
+            problems.extend(leaks)
             problems.extend(listener_problems(flagged, names, wrote=False))
             applied = ()
             break
@@ -1351,6 +1417,7 @@ async def _calibrate(
             together=True,
         )
         problems.extend(after.analysis.problems)
+        problems.extend(leak_problems([after], players, wrote=True))
         problems.extend(
             listener_problems(
                 [f for f in flagged_by_listener(recorder) if f not in flagged], names, wrote=True
@@ -1626,6 +1693,7 @@ async def check_alignment(
     problems.extend(restore_problems)
 
     names = {p.player_id: p.name for p in players}
+    problems.extend(leak_problems(list(passes.values()), players, wrote=True))
     problems.extend(listener_problems(flagged_by_listener(recorder), names, wrote=True))
     check = AlignmentCheck(passes=passes, names=names)
 
@@ -1675,6 +1743,136 @@ async def check_alignment(
         )
 
     return replace(check, problems=tuple(dict.fromkeys(problems)))
+
+
+SPEAKER_TEST_STEP_SECONDS = 45.0
+"""How long the speaker test waits for an answer before moving on."""
+
+Ask = Callable[[dict], Awaitable["bool | None"]]
+"""Puts one question to the listener and returns the answer, ``None`` for none."""
+
+
+@dataclass(frozen=True)
+class SpeakerTestResult:
+    """What the listener heard, speaker by speaker, and in the silence."""
+
+    names: dict[str, str]
+    alone: dict[str, bool | None]
+    """Per speaker: heard on its own (``True``), not (``False``), no answer."""
+
+    silent: bool | None
+    """With every speaker muted: silence (``True``), still sound (``False``)."""
+
+    @property
+    def passed(self) -> bool:
+        return self.silent is True and all(v is True for v in self.alone.values())
+
+    @property
+    def problems(self) -> list[str]:
+        problems = []
+        for pid, ok in self.alone.items():
+            name = self.names.get(pid, pid)
+            if ok is False:
+                problems.append(
+                    say(
+                        en=f"in the turn of «{name}» you heard something else than «{name}» "
+                        f"alone. Either «{name}» did not play, or another speaker did not fall "
+                        "silent when muted.",
+                        ru=f"в очереди «{name}» вы слышали не только «{name}». Либо «{name}» "
+                        "не играла, либо другая колонка не замолчала при заглушении.",
+                    )
+                )
+            elif ok is None:
+                problems.append(
+                    say(
+                        en=f"no answer for «{name}».",
+                        ru=f"нет ответа для «{name}».",
+                    )
+                )
+        if self.silent is False:
+            problems.append(
+                say(
+                    en="with every speaker muted you still heard the test sound: a speaker "
+                    "does not fall silent when muted. Walk up to each one while it is quiet "
+                    "for everyone else to find it, then check its mute in Music Assistant or "
+                    "in its app, or switch it off here — until then every measurement hears "
+                    "it in the other speakers' rounds.",
+                    ru="при заглушении всех колонок тестовый звук всё равно был слышен: какая-то "
+                    "колонка не замолкает. Подойдите к каждой, чтобы найти её, затем проверьте "
+                    "её заглушение в Music Assistant или в её приложении, или выключите её здесь "
+                    "— иначе каждый замер слышит её в кругах других колонок.",
+                )
+            )
+        elif self.silent is None:
+            problems.append(
+                say(en="no answer for the silence.", ru="нет ответа про тишину.")
+            )
+        return problems
+
+
+async def speaker_test(
+    backend: SpeakerBackend,
+    signal_url,
+    ask: Ask,
+    *,
+    config: SessionConfig | None = None,
+    step_seconds: float = SPEAKER_TEST_STEP_SECONDS,
+    sleep: Sleeper = asyncio.sleep,
+) -> SpeakerTestResult:
+    """Play each speaker on its own, then none, and ask the listener each time.
+
+    The measurement takes the first arrival it hears in each round, so a
+    speaker that keeps playing while muted does not spoil a round — it
+    *replaces* it, and the numbers still look plausible. An ear standing in
+    the room is the one instrument that knows which speaker is sounding, and
+    it is given the time to answer here, unlike during a measurement whose
+    rounds move on every few seconds.
+    """
+    cfg = config or SessionConfig()
+    players = session_players(await backend.list_players())
+    if not players:
+        raise ValueError(
+            say(en="no speaker to test", ru="нет колонок для проверки")
+        )
+    names = {p.player_id: p.name for p in players}
+    player_ids = [p.player_id for p in players]
+    leader = player_ids[0]
+    # Long enough for every step to wait its full time; the track is
+    # stopped as soon as the last answer is in.
+    steps = len(players) + 1
+    chirps = min(512, int(steps * step_seconds / cfg.period_seconds) + 4)
+    signal = cfg.build_signal(chirps)
+
+    alone: dict[str, bool | None] = {}
+    silent: bool | None = None
+    async with preserved_player_state(backend, player_ids):
+        await release_from_other_groups(backend, player_ids, leader)
+        await backend.set_group(leader, player_ids)
+        await confirm_group(backend, leader, player_ids, sleep=sleep)
+        for player_id in player_ids:
+            await backend.set_muted(player_id, True)
+        await confirm_mute(backend, dict.fromkeys(player_ids, True), sleep=sleep)
+        await backend.play_url(leader, _resolve_url(signal_url, signal))
+        try:
+            for index, player_id in enumerate(player_ids):
+                await backend.set_muted(player_id, False)
+                await confirm_mute(backend, {player_id: False}, sleep=sleep)
+                alone[player_id] = await ask(
+                    {
+                        "step": "alone",
+                        "player_id": player_id,
+                        "name": names[player_id],
+                        "index": index + 1,
+                        "count": len(player_ids),
+                    }
+                )
+                await backend.set_muted(player_id, True)
+            await confirm_mute(backend, dict.fromkeys(player_ids, True), sleep=sleep)
+            silent = await ask({"step": "silence"})
+        finally:
+            with contextlib.suppress(Exception):
+                await backend.stop(leader)
+    return SpeakerTestResult(names=names, alone=alone, silent=silent)
 
 
 async def play_listening_test(
