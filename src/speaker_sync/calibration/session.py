@@ -24,6 +24,7 @@ from typing import Protocol
 import numpy as np
 
 from speaker_sync.calibration.measure import (
+    TOGETHER,
     MeasurementAnalysis,
     RoundPlan,
     analyze,
@@ -112,6 +113,31 @@ class SessionConfig:
     track_sample_rate: int = DEFAULT_SAMPLE_RATE
     settle_seconds: float = 0.35
     """Pause after a mute change before the round's chirps start counting."""
+
+    measure_passes: int = 2
+    """Measurements taken before anything is corrected, combined by median.
+
+    One pass trusts one moment. Two show whether the speakers arrive the same
+    way twice, which is the difference between a speaker with a latency and a
+    speaker whose latency wanders — and the second kind cannot be corrected
+    with a fixed number at all. It costs one pass of time.
+    """
+
+    max_measure_passes: int = 3
+    """Ceiling when the passes disagree or a speaker went unheard in one."""
+
+    refine: bool = True
+    """Correct again when the verification lands short of aligned.
+
+    Only when every speaker moved as asked and arrived steadily: a speaker
+    that ignores its writes gets nowhere with a second one, and one whose
+    delay wanders would only be chased around by it.
+    """
+
+    max_refinements: int = 2
+    """Corrections after the first, at most. A client that applies a share of
+    each write closes the gap by that share every time — 90 % leaves 10 %,
+    then 1 % — so two are enough for anything that counts as taking it."""
 
     def build_signal(self, chirp_count: int) -> TestSignal:
         return build_test_signal(
@@ -209,6 +235,50 @@ def _need_two(players: Sequence[PlayerInfo]) -> None:
                 ru="нужно хотя бы две колонки, которые звучат и умеют заглушаться",
             )
         )
+
+
+def flagged_by_listener(recorder: Recorder) -> list[str]:
+    """Rounds the person holding the phone said did not sound right, by player.
+
+    The page offers "that's right" / "I hear something else" while each round
+    plays. A human ear is the one check that knows which speaker is actually
+    sounding, so a "something else" outweighs any number the analysis found.
+    """
+    feedback = getattr(recorder, "human_feedback", None) or []
+    return list(dict.fromkeys(f["player_id"] for f in feedback if not f.get("ok")))
+
+
+def listener_problems(flagged: Sequence[str], names: dict[str, str], *, wrote: bool) -> list[str]:
+    problems = []
+    for player_id in flagged:
+        name = (
+            say(en="every speaker together", ru="все колонки вместе")
+            if player_id == TOGETHER
+            else f"«{names.get(player_id, player_id)}»"
+        )
+        problems.append(
+            say(
+                en=f"you reported that the round of {name} did not sound as it should. "
+                + (
+                    ""
+                    if wrote
+                    else "Nothing was written, because a round that was not what it claimed "
+                    "makes every reading suspect. "
+                )
+                + "Usually a speaker did not fall silent when muted, or never played — check "
+                "the mute control of the speakers in Music Assistant, then measure again.",
+                ru=f"вы отметили, что круг {name} звучал не так, как должен. "
+                + (
+                    ""
+                    if wrote
+                    else "Ничего не записано: если круг был не тем, за что себя выдавал, "
+                    "под подозрением все отсчёты. "
+                )
+                + "Обычно колонка не замолкала при заглушении или вовсе не играла — проверьте "
+                "в Music Assistant управление заглушением колонок и измерьте снова.",
+            )
+        )
+    return problems
 
 
 def solution_problems(solution: CalibrationSolution) -> list[str]:
@@ -404,6 +474,176 @@ async def measure_once(
         sample_rate=sample_rate,
         together=check,
     )
+
+
+STABILITY_TOLERANCE_MS = 1.5
+"""How far one speaker's arrival may differ between passes and still count as
+the same arrival. Readings within one pass agree to a tenth of a millisecond,
+so anything near this is the speaker moving, not the measurement."""
+
+
+@dataclass(frozen=True)
+class CombinedPasses:
+    """Several measurement passes folded into one, and how well they agreed."""
+
+    pass_: MeasurementPass
+    """The first pass, carrying the per-speaker median in its own time base."""
+
+    variation_ms: dict[str, float]
+    """Per speaker, how far its arrival moved between passes."""
+
+    missing: tuple[str, ...]
+    """Speakers that went unheard in at least one pass."""
+
+    def unstable(self, tolerance: float = STABILITY_TOLERANCE_MS) -> dict[str, float]:
+        return {pid: v for pid, v in self.variation_ms.items() if v > tolerance}
+
+
+def combine_passes(passes: Sequence[MeasurementPass], order: Sequence[str]) -> CombinedPasses:
+    """Fold repeated passes into one reading per speaker.
+
+    Each pass has its own arbitrary origin, so speakers are compared against
+    an anchor speaker present in every pass. The anchor is chosen as the one
+    that makes the others vary least: should the anchor itself be the speaker
+    that wanders, every other speaker would appear to wander instead, and the
+    report would name the wrong ones.
+    """
+    first = passes[0]
+    missing = tuple(
+        pid for pid in order if any(pid not in p.latencies_ms for p in passes)
+    )
+    candidates = [pid for pid in order if all(pid in p.latencies_ms for p in passes)]
+    if len(passes) == 1 or not candidates:
+        return CombinedPasses(first, {}, missing)
+
+    def relative(anchor: str) -> dict[str, list[float]]:
+        values: dict[str, list[float]] = {}
+        for pass_ in passes:
+            base = pass_.latencies_ms[anchor]
+            for pid, latency in pass_.latencies_ms.items():
+                values.setdefault(pid, []).append(latency - base)
+        return values
+
+    def total_variation(anchor: str) -> float:
+        return sum(max(v) - min(v) for v in relative(anchor).values())
+
+    anchor = min(candidates, key=total_variation)
+    values = relative(anchor)
+    origin = first.latencies_ms[anchor]
+
+    readings = {}
+    for pid in order:
+        if pid not in values:
+            continue
+        template = next(p.analysis.readings[pid] for p in passes if pid in p.analysis.readings)
+        readings[pid] = replace(
+            template,
+            latency_ms=origin + float(np.median(values[pid])),
+            spread_ms=max(
+                p.analysis.readings[pid].spread_ms for p in passes if pid in p.analysis.readings
+            ),
+            arrivals_used=sum(
+                p.analysis.readings[pid].arrivals_used
+                for p in passes
+                if pid in p.analysis.readings
+            ),
+        )
+    problems = tuple(dict.fromkeys(pr for p in passes for pr in p.analysis.problems))
+    combined = replace(first, analysis=replace(first.analysis, readings=readings, problems=problems))
+    variation = {pid: max(v) - min(v) for pid, v in values.items() if len(v) > 1}
+    # The anchor varies by definition not at all against itself; it is as
+    # stable as the least stable of the rest allows it to look.
+    return CombinedPasses(combined, variation, missing)
+
+
+def stability_problems(combined: CombinedPasses, names: dict[str, str]) -> list[str]:
+    unstable = combined.unstable()
+    if not unstable:
+        return []
+    if len(unstable) == len(combined.variation_ms) - 1 and len(combined.variation_ms) == 2:
+        # Two speakers: the offset between them moved, and nothing says which.
+        a, b = combined.variation_ms
+        value = max(unstable.values())
+        return [
+            say(
+                en=f"«{names.get(a, a)}» and «{names.get(b, b)}» were {value:.1f} ms further "
+                "apart in one measurement than in another. One of them does not play at a "
+                "steady delay, so no fixed correction can hold; the median was used. With a "
+                "third speaker the measurement can tell which one it is.",
+                ru=f"«{names.get(a, a)}» и «{names.get(b, b)}» в одном замере разошлись на "
+                f"{value:.1f} мс больше, чем в другом. Одна из них играет с плавающей "
+                "задержкой, и никакая постоянная поправка не удержится; взята медиана. С "
+                "третьей колонкой замер сможет сказать, какая именно.",
+            )
+        ]
+    return [
+        say(
+            en=f"«{names.get(pid, pid)}» arrived {value:.1f} ms differently from one "
+            "measurement to the next. Its delay is not steady, so no fixed correction can hold "
+            "for it; the median was used. Typical causes: a playback client with unreliable "
+            "timing (an old client version, an audio driver with variable buffering) or "
+            "Wi-Fi dropouts. “Check without changes” a few times in a row shows whether it "
+            "keeps moving.",
+            ru=f"«{names.get(pid, pid)}» от замера к замеру приходила по-разному, на "
+            f"{value:.1f} мс. Её задержка непостоянна, и постоянная поправка не удержится; "
+            "взята медиана. Обычные причины: клиент воспроизведения с ненадёжным таймингом "
+            "(старая версия, аудиодрайвер с плавающей буферизацией) или провалы Wi-Fi. "
+            "Несколько «Проверок без изменений» подряд покажут, продолжает ли она гулять.",
+        )
+        for pid, value in unstable.items()
+    ]
+
+
+async def measure_repeatedly(
+    backend: SpeakerBackend,
+    recorder: Recorder,
+    players: Sequence[PlayerInfo],
+    *,
+    config: SessionConfig,
+    reference_id: str | None = None,
+    signal_url="",
+    sleep: Sleeper = asyncio.sleep,
+    progress: ProgressCallback | None = None,
+) -> CombinedPasses:
+    """Measure until two passes agree, up to the configured ceiling.
+
+    A speaker unheard in a pass, or passes that disagree, earn one more pass;
+    the result is the per-speaker median of all of them.
+    """
+    order = [p.player_id for p in players]
+    passes: list[MeasurementPass] = []
+    wanted = max(1, config.measure_passes)
+    ceiling = max(wanted, config.max_measure_passes)
+    combined = None
+    while len(passes) < ceiling:
+        _report(
+            progress,
+            stage="pass",
+            which="before",
+            attempt=len(passes) + 1,
+            planned=wanted,
+            players=len(players),
+        )
+        passes.append(
+            await measure_once(
+                backend,
+                recorder,
+                players,
+                reference_id=reference_id,
+                config=config,
+                signal_url=signal_url,
+                sleep=sleep,
+                progress=progress,
+            )
+        )
+        if len(passes) < wanted:
+            continue
+        combined = combine_passes(passes, order)
+        if not combined.missing and not combined.unstable():
+            break
+        wanted = len(passes) + 1
+    assert combined is not None
+    return combined
 
 
 GROUP_CONFIRM_TIMEOUT_SECONDS = 4.0
@@ -1050,18 +1290,20 @@ async def _calibrate(
             )
         )
 
-    _report(progress, stage="pass", which="before", players=len(players))
-    before = await measure_once(
+    names = {p.player_id: p.name for p in players}
+    combined = await measure_repeatedly(
         backend,
         recorder,
         players,
-        reference_id=reference_id,
         config=cfg,
+        reference_id=reference_id,
         signal_url=signal_url,
         sleep=sleep,
         progress=progress,
     )
+    before = combined.pass_
     problems = list(before.analysis.problems)
+    problems.extend(stability_problems(combined, names))
     problems.extend(_check_the_rounds_isolated(before, players))
 
     measurements = build_measurements(before, players)
@@ -1070,10 +1312,18 @@ async def _calibrate(
     corrected_sign = False
     verifications: dict[str, PlayerVerification] = {}
 
+    flagged = flagged_by_listener(recorder)
     while True:
         solution = solve(measurements, sign=sign)
         if not corrected_sign:
             problems.extend(solution_problems(solution))
+        if flagged:
+            # The listener heard something other than what the round claimed.
+            # Writing corrections computed from it could only make things
+            # worse, so the run reports and stops here.
+            problems.extend(listener_problems(flagged, names, wrote=False))
+            applied = ()
+            break
 
         writes = solution.corrections if corrected_sign else solution.changed()
         _report(progress, stage="applying", writes=len(writes))
@@ -1096,6 +1346,11 @@ async def _calibrate(
             together=True,
         )
         problems.extend(after.analysis.problems)
+        problems.extend(
+            listener_problems(
+                [f for f in flagged_by_listener(recorder) if f not in flagged], names, wrote=True
+            )
+        )
 
         # The verification pass is itself a sign probe: known corrections went
         # in and the arrivals moved. Reading it costs nothing and settles the
@@ -1121,9 +1376,40 @@ async def _calibrate(
             problems.extend(after.together.problems)
 
         verifications = verify_movements(before, after, solution, sign)
-        problems.extend(
-            _check_the_movements(verifications, {p.player_id: p.name for p in players})
-        )
+        problems.extend(_check_the_movements(verifications, names))
+
+        refinements = 0
+        while (
+            cfg.refine
+            and refinements < cfg.max_refinements
+            and not combined.unstable()
+            and verifications
+            and all(check.held for check in verifications.values())
+            and solution.reference_late_ms is None
+            and after.relative_spread_ms() > REFINE_SPREAD_MS
+        ):
+            refinements += 1
+            refined = await _refine(
+                backend,
+                recorder,
+                after,
+                solution,
+                sign=sign,
+                config=cfg,
+                reference_id=reference_id,
+                signal_url=signal_url,
+                sleep=sleep,
+                progress=progress,
+            )
+            if refined is None:
+                break
+            solution, after, more = refined
+            applied = tuple({**dict(applied), **dict(more)}.items())
+            problems.extend(after.analysis.problems)
+            if after.together is not None:
+                problems.extend(after.together.problems)
+            verifications = verify_movements(before, after, solution, sign)
+            problems.extend(_check_the_movements(verifications, names))
 
         if after.relative_spread_ms() > before.relative_spread_ms():
             problems.append(
@@ -1149,6 +1435,67 @@ async def _calibrate(
         # learns nothing from the repetition. dict preserves first-seen order.
         problems=tuple(dict.fromkeys(problems)),
     )
+
+
+REFINE_SPREAD_MS = 1.5
+"""Left further apart than this after verifying, one more correction is made."""
+
+
+async def _refine(
+    backend: SpeakerBackend,
+    recorder: Recorder,
+    after: MeasurementPass,
+    solution: CalibrationSolution,
+    *,
+    sign: int,
+    config: SessionConfig,
+    reference_id: str | None,
+    signal_url,
+    sleep: Sleeper,
+    progress: ProgressCallback | None,
+):
+    """Correct what the verification still found, and verify again.
+
+    The verification pass is a measurement of the room as it now stands, with
+    the new delays in force, so it is the best starting point there is for a
+    second, smaller correction: whatever moved slightly differently than asked
+    — rounding, a delay applied a buffer late — is in it.
+
+    Returns the solution expressed against the speakers' delays from before
+    the whole run, the final pass and what was written, or ``None`` when there
+    was nothing left to write.
+    """
+    players = session_players(await backend.list_players())
+    second = solve(build_measurements(after, players), sign=sign)
+    if not second.changed():
+        return None
+
+    _report(progress, stage="applying", writes=len(second.changed()), refine=True)
+    applied = await apply_solution(backend, second)
+    _report(progress, stage="pass", which="refine", players=len(players))
+    final = await measure_once(
+        backend,
+        recorder,
+        session_players(await backend.list_players()),
+        reference_id=reference_id,
+        config=config,
+        signal_url=signal_url,
+        sleep=sleep,
+        progress=progress,
+        together=True,
+    )
+    # Expressed from the run's starting point, so "before" and "after" in the
+    # report and the movements checked against them span the whole run.
+    original = {c.player_id: c.current_adjust_ms for c in solution.corrections}
+    combined = replace(
+        second,
+        corrections=tuple(
+            replace(c, current_adjust_ms=original.get(c.player_id, c.current_adjust_ms))
+            for c in second.corrections
+        ),
+        spread_before_ms=solution.spread_before_ms,
+    )
+    return combined, final, applied
 
 
 # ------------------------------------------------------------------ diagnosis
@@ -1267,6 +1614,7 @@ async def check_alignment(
     problems.extend(restore_problems)
 
     names = {p.player_id: p.name for p in players}
+    problems.extend(listener_problems(flagged_by_listener(recorder), names, wrote=True))
     check = AlignmentCheck(passes=passes, names=names)
 
     spread = check.spread_ms

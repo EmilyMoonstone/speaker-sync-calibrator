@@ -13,7 +13,7 @@ milliseconds without any of the timing logic being stubbed out.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from urllib.parse import parse_qs, urlparse
 
 import numpy as np
@@ -93,6 +93,18 @@ class FakeMusicAssistant:
     player instead carries ``static_delay_ms`` at ``(0, 5000)``: advance-only,
     and the server rejects anything outside it rather than clamping.
     """
+
+    wander_ms: dict[str, tuple[float, ...]] = field(default_factory=dict)
+    """Extra latency per playback, cycling: a speaker whose delay is not the
+    same from one stream start to the next, as a client with unreliable
+    timing behaves. ``{"bt": (0, 40)}`` adds nothing the first time, 40 ms the
+    second, nothing the third."""
+
+    dropouts: dict[str, set[int]] = field(default_factory=dict)
+    """Playbacks (counted from 1) in which a speaker makes no sound at all."""
+
+    plays: int = field(default=0, init=False)
+    """How many times playback has started."""
 
     no_delay: set[str] = field(default_factory=set)
     """Speakers that offer no delay setting at all — a phone app that
@@ -271,6 +283,7 @@ class FakeMusicAssistant:
             **{**self.config.__dict__, "track_rate": int(rate[0]) if rate else None}
         )
         self._playback_started = self.clock.now
+        self.plays += 1
         # The stream goes to the group the player leads, and to nobody else.
         self._stream_to = set(self.groups.get(player_id, [player_id]))
         self._playing = True
@@ -298,13 +311,22 @@ class FakeMusicAssistant:
         # A speaker outside the group never receives the stream, so it is
         # silent no matter what its mute state says.
         audible = [
-            s
+            self._as_this_time(s)
             for s in self.speakers
             if s.player_id not in self.ungroupable
             and (not self._stream_to or s.player_id in self._stream_to)
+            and self.plays not in self.dropouts.get(s.player_id, set())
         ]
         recording = render_recording(audible, rounds, config)
         return recording, config.mic_sample_rate
+
+    def _as_this_time(self, speaker: VirtualSpeaker) -> VirtualSpeaker:
+        """The speaker with this playback's share of its wandering applied."""
+        wander = self.wander_ms.get(speaker.player_id)
+        if not wander:
+            return speaker
+        extra = wander[(self.plays - 1) % len(wander)]
+        return replace(speaker, hardware_latency_ms=speaker.hardware_latency_ms + extra)
 
     def reference_chirp(self, sample_rate: int | None = None) -> np.ndarray:
         cfg = self.config

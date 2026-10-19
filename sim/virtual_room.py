@@ -53,6 +53,13 @@ class VirtualSpeaker:
     """How this speaker interprets ``sync_adjust``; ``-1`` models an inverted
     server convention, which the validation step must detect."""
 
+    adjust_scale: float = 1.0
+    """How much of its delay setting the speaker really applies.
+
+    ``0.9`` models a client that moves 90 % of the way it is asked to —
+    close enough to pass as having taken the write, far enough to leave a
+    large correction visibly short."""
+
     glitches: tuple[tuple[int, float], ...] = ()
     """``(chirp_index, extra_ms)`` — a one-off timing hiccup on that chirp.
 
@@ -99,7 +106,11 @@ class VirtualSpeaker:
     @property
     def total_latency_ms(self) -> float:
         """Ground truth: when this speaker's sound reaches the microphone."""
-        return self.hardware_latency_ms + self.acoustic_ms + self.sign * self.sync_adjust_ms
+        return (
+            self.hardware_latency_ms
+            + self.acoustic_ms
+            + self.sign * self.sync_adjust_ms * self.adjust_scale
+        )
 
     def with_adjust(self, sync_adjust_ms: int) -> "VirtualSpeaker":
         return replace(self, sync_adjust_ms=sync_adjust_ms)
