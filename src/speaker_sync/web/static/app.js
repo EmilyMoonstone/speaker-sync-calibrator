@@ -86,6 +86,16 @@ const STRINGS = {
     ms: 'ms',
     reference_pill: 'reference (not adjustable)',
     reference_hint: 'No delay setting: measured, and the others are aligned to it. Its settings are never written.',
+    delay: 'Delay',
+    verification: 'Verified',
+    arrives: (v) => `arrives +${v.ms} ms`,
+    unchanged: 'unchanged',
+    plays_earlier: (v) => `plays ${v.ms} ms earlier`,
+    plays_later: (v) => `plays ${v.ms} ms later`,
+    moved_by: (v) => `moved ${v.observed} of ${v.expected} ms`,
+    nothing_to_write: 'Already in line — nothing needed writing, so nothing was.',
+    position_note: 'The alignment holds where the microphone stood; each metre closer to'
+      + ' one speaker than the microphone was makes it ~3 ms early.',
     ready_pill: 'ready',
     not_taking_part: 'not taking part',
     switch_off: 'switch off',
@@ -99,9 +109,6 @@ const STRINGS = {
     ready: (v) => `Ready, ${v.n} ${plural(v.n, ['speaker', 'speakers'])}.`
       + ' Put the phone where you listen.',
     toggle_failed: 'Did not switch: ',
-    was: 'was',
-    now: 'now',
-    residual: 'error',
     limit: 'limit',
     centered: 'The spread cannot be covered by a one-sided delay, so the corrections are'
       + ' measured from the middle rather than from the slowest speaker.',
@@ -189,6 +196,16 @@ const STRINGS = {
     ms: 'мс',
     reference_pill: 'опорная (не настраивается)',
     reference_hint: 'Нет настройки задержки: измеряется, остальные выравниваются по ней. Её настройки никогда не меняются.',
+    delay: 'Задержка',
+    verification: 'Проверка',
+    arrives: (v) => `приходит +${v.ms} мс`,
+    unchanged: 'без изменений',
+    plays_earlier: (v) => `звучит на ${v.ms} мс раньше`,
+    plays_later: (v) => `звучит на ${v.ms} мс позже`,
+    moved_by: (v) => `сдвиг ${v.observed} из ${v.expected} мс`,
+    nothing_to_write: 'Уже выровнено — записывать было нечего, и ничего не записано.',
+    position_note: 'Выравнивание верно там, где стоял микрофон; каждый метр ближе к одной'
+      + ' из колонок даёт ей ~3 мс опережения.',
     ready_pill: 'готова',
     not_taking_part: 'не участвует',
     switch_off: 'выключить',
@@ -201,9 +218,6 @@ const STRINGS = {
       + ' будет зависеть от их собственной синхронизации.',
     ready: (v) => `Готово, колонок: ${v.n}. Положите телефон туда, где слушаете.`,
     toggle_failed: 'Не переключилось: ',
-    was: 'было',
-    now: 'стало',
-    residual: 'ошибка',
     limit: 'предел',
     centered: 'Разброс не покрывается односторонней задержкой, поэтому поправки отсчитаны'
       + ' от середины, а не от самой медленной колонки.',
@@ -515,7 +529,8 @@ async function refreshPlayers() {
         p.renders_audio !== false && p.config_keys && p.config_keys.length
           ? `<details class="keys" data-player="${escapeAttr(p.player_id)}"${
               unfolded.has(p.player_id) ? ' open' : ''}><summary>${t(
-              p.enabled && p.available && !p.sync_adjust_key ? 'settings_found' : 'settings_all'
+              p.enabled && p.available && !p.sync_adjust_key && !p.reference
+                ? 'settings_found' : 'settings_all'
             )}</summary>${escapeHtml(p.config_keys.join(', '))}</details>`
           : ''
       }${
@@ -593,20 +608,43 @@ function showReport(report) {
   el('result').classList.remove('hidden');
   setProgress(1);
 
-  el('before').textContent = report.spread_before_ms.toFixed(0);
+  // Small spreads are the interesting ones, so they keep their decimal.
+  const ms = (value) => (value < 10 ? value.toFixed(1) : value.toFixed(0));
+  // Nothing written because nothing needed writing is a result, not a fault.
+  const settled = report.written === 0 && !report.problems.length;
+  el('before').textContent = ms(report.spread_before_ms);
   const after = el('after');
-  after.textContent = report.spread_after_ms === null ? '—' : report.spread_after_ms.toFixed(0);
-  after.className = 'headline ' + (report.improved ? 'good' : 'bad');
+  after.textContent = report.spread_after_ms === null
+    ? (settled ? ms(report.spread_before_ms) : '—')
+    : ms(report.spread_after_ms);
+  after.className = 'headline ' + (report.improved || settled ? 'good' : 'bad');
+
+  const moved = (p) => {
+    if (p.reference) return `<span class="sub">${t('reference_pill')}</span>`;
+    if (!p.moves_ms) return `<span class="sub">${t('unchanged')}</span>`;
+    return `<span class="sub">${t(p.moves_ms < 0 ? 'plays_earlier' : 'plays_later',
+                                  { ms: Math.abs(p.moves_ms) })}</span>`;
+  };
+  const checked = (p) => {
+    const v = p.verification;
+    if (!v) return '—';
+    const text = t('moved_by', {
+      observed: v.observed_ms.toFixed(1), expected: v.expected_ms.toFixed(1),
+    });
+    return `<span class="pill ${v.held ? 'on' : 'off'}">${v.held ? '✓' : '✗'}</span>`
+      + `<br><span class="sub">${escapeHtml(text)}</span>`;
+  };
 
   el('corrections').innerHTML =
-    `<thead><tr><th>${t('speaker')}</th><th>${t('was')}</th><th>${t('now')}</th>`
-    + `<th>${t('residual')}</th></tr></thead><tbody>` +
+    `<thead><tr><th>${t('speaker')}</th><th>${t('delay')}</th>`
+    + `<th>${t('verification')}</th></tr></thead><tbody>` +
     report.players.map((p) => `
       <tr>
-        <td>${escapeHtml(p.name)}${p.clamped ? ` <span class="pill off">${t('limit')}</span>` : ''}</td>
-        <td class="num">${p.current_adjust_ms} ${t('ms')}</td>
-        <td class="num"><b>${p.target_adjust_ms} ${t('ms')}</b></td>
-        <td class="num">${p.residual_error_ms.toFixed(1)} ${t('ms')}</td>
+        <td>${escapeHtml(p.name)}${p.clamped ? ` <span class="pill off">${t('limit')}</span>` : ''}
+          <br><span class="sub">${t('arrives', { ms: p.arrival_ms.toFixed(1) })}</span></td>
+        <td class="num">${p.reference ? '—' : `${p.current_adjust_ms} → <b>${p.target_adjust_ms}</b> ${t('ms')}`}
+          <br>${moved(p)}</td>
+        <td class="num">${checked(p)}</td>
       </tr>`).join('') + '</tbody>';
 
   const notes = [];
@@ -616,13 +654,19 @@ function showReport(report) {
   if (report.strategy === 'align_to_fastest') {
     notes.push(['', t('fastest')]);
   }
-  if (!report.fits) {
+  // A reference that arrives too late explains itself among the problems.
+  if (!report.fits && report.strategy !== 'reference_too_late') {
     notes.push(['bad', t('does_not_fit')]);
   }
   report.problems.forEach((p) => notes.push(['bad', p]));
   if (!notes.length && report.improved) {
     notes.push(['', t('verified')]);
   }
+  if (settled) {
+    notes.push(['', t('nothing_to_write')]);
+  }
+  // The calibration holds for where the microphone stood.
+  notes.push(['', t('position_note')]);
   if (report.together && report.together.confirmed) {
     notes.push(['', t('together_ok', { spread: report.together.spread_ms.toFixed(1) })]);
   }
@@ -631,8 +675,8 @@ function showReport(report) {
     .map(([kind, text]) => `<p class="note ${kind}">${escapeHtml(text)}</p>`)
     .join('');
 
-  setStatus(t(report.improved ? 'done' : 'done_with_notes'),
-            report.improved ? 'ok' : 'err');
+  const good = report.improved || settled;
+  setStatus(t(good ? 'done' : 'done_with_notes'), good ? 'ok' : 'err');
 }
 
 function showCheck(check) {

@@ -126,3 +126,25 @@ async def test_a_reference_that_cannot_be_muted_sits_out():
     report = await calibrate(server, SimulatedRecorder(server), sleep=server.clock.sleep)
 
     assert "pixel" not in report.before.latencies_ms
+
+
+async def test_the_report_follows_each_speaker_through_the_run():
+    """Measured arrival, old and new delay, which way it moves the speaker and
+    whether the verification saw it move that far — per speaker."""
+    from speaker_sync.web.app import describe
+
+    server = flat(pixel_ms=20.0)
+    report = await calibrate(server, SimulatedRecorder(server), sleep=server.clock.sleep)
+
+    rows = {row["player_id"]: row for row in describe(report)["players"]}
+
+    assert rows["pixel"]["reference"] is True
+    assert rows["pixel"]["arrival_ms"] == 0.0  # the earliest
+    assert rows["pixel"]["moves_ms"] == 0
+    # pc: 60 ms + 3 m against pixel's 20 ms + 1 m, so ~46 ms later; Sendspin
+    # brings it forward, so its arrival moves earlier by what was written.
+    assert rows["pc"]["arrival_ms"] == pytest.approx(45.8, abs=0.5)
+    assert rows["pc"]["target_adjust_ms"] == pytest.approx(46, abs=1)
+    assert rows["pc"]["moves_ms"] == -rows["pc"]["target_adjust_ms"]
+    assert rows["pc"]["verification"]["held"] is True
+    assert describe(report)["written"] == 2

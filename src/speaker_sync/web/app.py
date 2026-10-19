@@ -865,7 +865,25 @@ def describe_check(check: AlignmentCheck) -> dict:
 
 
 def describe(report: CalibrationReport) -> dict:
-    """Flatten a report into something the UI can render directly."""
+    """Flatten a report into something the UI can render directly.
+
+    Per speaker it carries what is needed to follow the run without trusting
+    it: the arrival measured, the delay before and after, which way that moves
+    the speaker, and whether the verification pass saw it move that far.
+    """
+    corrections = report.solution.corrections
+    earliest = min((c.measured_ms for c in corrections), default=0.0)
+
+    def verification(player_id: str) -> dict | None:
+        check = report.verifications.get(player_id)
+        if check is None:
+            return None
+        return {
+            "expected_ms": round(check.expected_ms, 1),
+            "observed_ms": round(check.observed_ms, 1),
+            "held": check.held,
+        }
+
     return {
         "strategy": report.solution.strategy,
         "sign": report.sign,
@@ -875,6 +893,7 @@ def describe(report: CalibrationReport) -> dict:
             None if report.spread_after_ms is None else round(report.spread_after_ms, 1)
         ),
         "improved": report.improved,
+        "written": len(report.applied),
         "problems": list(report.problems),
         "together": (
             None
@@ -895,8 +914,16 @@ def describe(report: CalibrationReport) -> dict:
                 "residual_error_ms": round(c.residual_error_ms, 2),
                 "clamped": c.clamped,
                 "spread_ms": round(c.spread_ms, 2),
+                "reference": c.fixed,
+                # Measured arrival, after the earliest speaker.
+                "arrival_ms": round(c.measured_ms - earliest, 1),
+                # How the new delay moves the speaker's arrival: negative is
+                # earlier. The direction is the speaker's own where its
+                # protocol specifies one, else the session's.
+                "moves_ms": (c.sign or report.sign) * c.delta_ms,
+                "verification": verification(c.player_id),
             }
-            for c in report.solution.corrections
+            for c in corrections
         ],
     }
 
