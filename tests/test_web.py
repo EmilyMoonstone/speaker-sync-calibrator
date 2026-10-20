@@ -9,6 +9,7 @@ someone's flat and rewrite their speaker settings.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import wave
 
@@ -930,3 +931,33 @@ async def test_a_late_answer_is_not_taken_for_the_next_question(state):
         await client.close()
 
     assert answers["passed"] is True
+
+
+async def test_a_slider_in_the_volume_step_sets_and_keeps_a_test_volume(state, tmp_path):
+    """The slider moves the speaker's volume as it goes, and the value is
+    kept as its test volume for every measurement — across restarts."""
+    with_store(state, tmp_path)
+    client = await client_for(create_app(state))
+    try:
+        socket = await client.ws_connect("/ws")
+        await socket.send_json({"type": "set_volume", "player_id": "bt", "volume": 64, "test": True})
+        await socket.send_json({"type": "set_volume", "player_id": "avr", "volume": 33})
+        await asyncio.sleep(0.2)
+        listed = await (await client.get("/api/players")).json()
+        await socket.send_json({"type": "clear_test_volume", "player_id": "bt"})
+        await asyncio.sleep(0.1)
+        await socket.close()
+    finally:
+        await client.close()
+
+    rows = {p["player_id"]: p for p in listed["players"]}
+    assert rows["bt"]["test_volume"] == 64 and rows["bt"]["volume"] == 64
+    assert rows["avr"]["test_volume"] is None and rows["avr"]["volume"] == 33
+    assert ProfileStore.open(tmp_path).test_volumes == {}  # cleared again
+
+
+def test_test_volumes_survive_a_restart(tmp_path):
+    store = ProfileStore.open(tmp_path)
+    store.set_test_volume("pixel", 80)
+
+    assert ProfileStore.open(tmp_path).test_volumes == {"pixel": 80}

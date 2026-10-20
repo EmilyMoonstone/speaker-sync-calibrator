@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0 (fork EmilyMoonstone)
+- **Test volume, by ear** (new step 3): each speaker plays on its own while you slide its volume until the microphone hears it well at the measuring spot — the meter shows it. The values are kept as test volumes, used for every measurement, and your music volume comes back afterwards.
+- A speaker the microphone does not hear in a pass is turned up for the next one by itself (+20, at least 40), and back afterwards.
+- Fix: a phone app (MassDroid) could be left at volume 0 after a run. An unreported volume is no longer read as 0, and a volume is only put back when the run itself changed it or it fell to 0.
+
 ## 0.5.1 (fork EmilyMoonstone)
 - Rounds are timed from the first chirp the microphone actually hears, and every speaker switch happens halfway through the pause between two chirps. The stream starts well after "play" (set-up and client buffers), so switching by the play command cut the last chirp of a round — heard as a clipped chirp, measured as one reading a few ms off.
 - If no test sound is heard within 10 s of the start, the pass stops with a clear message instead of measuring blind.

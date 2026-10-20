@@ -158,6 +158,20 @@ const STRINGS = {
     not_used: (v) => `Not used (${v.n}) — groups, and players hidden or off in Music Assistant`,
     about_switch: 'What does the switch do?',
     about_positions: 'What is a position?',
+    step_volume: 'Test volume, by ear',
+    step_volume_hint: 'Optional: make each speaker clearly audible here. Used only while measuring.',
+    volume_short: 'Set',
+    ask_volume: (v) => `${v.index} of ${v.count}: «${v.name}» — slide until the microphone`
+      + ' hears it well here: the meter green and lively, never red.',
+    ask_next: 'Next',
+    ask_finish: 'Done',
+    ask_stop: 'Stop',
+    ask_reset: 'Use the music volume for this one',
+    volume_running: 'Test volume — listen, slide, then “Next”.',
+    volume_done: (v) => `Test volumes kept: ${v.list}. Your music volume is back.`,
+    volume_none: 'No test volume set — measurements use the music volume.',
+    test_volume: 'Test volume',
+    music_volume: 'Volume',
     ready_pill: 'ready',
     not_taking_part: 'not taking part',
     switch_off: 'switch off',
@@ -330,6 +344,20 @@ const STRINGS = {
     not_used: (v) => `Не используются (${v.n}) — группы и плееры, скрытые или выключенные в Music Assistant`,
     about_switch: 'Что делает переключатель?',
     about_positions: 'Что такое позиция?',
+    step_volume: 'Тестовая громкость на слух',
+    step_volume_hint: 'По желанию: сделайте каждую колонку хорошо слышной здесь. Только для замеров.',
+    volume_short: 'Задать',
+    ask_volume: (v) => `${v.index} из ${v.count}: «${v.name}» — двигайте, пока микрофон`
+      + ' не будет хорошо её слышать: шкала зелёная и живая, но не красная.',
+    ask_next: 'Дальше',
+    ask_finish: 'Готово',
+    ask_stop: 'Стоп',
+    ask_reset: 'Для этой колонки — обычная громкость',
+    volume_running: 'Тестовая громкость — слушайте, двигайте, затем «Дальше».',
+    volume_done: (v) => `Тестовые громкости сохранены: ${v.list}. Обычная громкость возвращена.`,
+    volume_none: 'Тестовая громкость не задана — замеры идут на обычной громкости.',
+    test_volume: 'Тестовая громкость',
+    music_volume: 'Громкость',
     ready_pill: 'готова',
     not_taking_part: 'не участвует',
     switch_off: 'выключить',
@@ -413,6 +441,7 @@ let runnable = false;  // enough speakers are switched on to run one
 function refreshControls() {
   el('run').disabled = busy || !runnable;
   el('speakertest').disabled = busy || !runnable;
+  el('volumestep').disabled = busy || !players.some((p) => p.measured);
   el('check').disabled = busy || !runnable;
   el('listen').disabled = busy || !runnable;
   el('refresh').disabled = busy;
@@ -539,8 +568,29 @@ function socketOpen() {
   return socket && socket.readyState === WebSocket.OPEN;
 }
 
+let volumeTarget = null;   // the speaker the slider is setting
+let volumeTimer = null;
+
 function askListener(question) {
   askedQuestion = question.question_id;
+  const volume = question.step === 'volume';
+  el('ask-volume').hidden = !volume;
+  el('ask-reset').hidden = !volume;
+  if (volume) {
+    volumeTarget = question.player_id;
+    const level = question.volume === null || question.volume === undefined ? 50 : question.volume;
+    el('ask-slider').value = level;
+    el('ask-value').textContent = `${level} %`;
+    el('ask-question').textContent = t('ask_volume', question);
+    el('ask-yes').textContent = t(question.index === question.count ? 'ask_finish' : 'ask_next');
+    el('ask-no').textContent = t('ask_stop');
+    el('ask-yes').disabled = false;
+    el('ask-no').disabled = false;
+    el('ask').hidden = false;
+    el('live-playing').textContent = question.name;
+    el('ask').scrollIntoView({ block: 'nearest' });
+    return;
+  }
   const alone = question.step === 'alone';
   el('ask-question').textContent = alone ? t('ask_alone', question) : t('ask_silence');
   el('ask-yes').textContent = t(alone ? 'ask_alone_yes' : 'ask_silence_yes');
@@ -556,6 +606,58 @@ function answerListener(ok) {
   el('ask-yes').disabled = true;
   el('ask-no').disabled = true;
   socket.send(JSON.stringify({ type: 'speaker_test_answer', question_id: askedQuestion, ok }));
+}
+
+// The slider sets the speaker's volume as it moves, so the listener hears
+// the change; the value is kept as its test volume.
+function slideVolume() {
+  const level = Number(el('ask-slider').value);
+  el('ask-value').textContent = `${level} %`;
+  clearTimeout(volumeTimer);
+  volumeTimer = setTimeout(() => {
+    if (!socketOpen() || !volumeTarget) return;
+    socket.send(JSON.stringify({ type: 'set_volume', player_id: volumeTarget, volume: level, test: true }));
+  }, 120);
+}
+
+function resetVolume() {
+  if (!socketOpen() || !volumeTarget) return;
+  socket.send(JSON.stringify({ type: 'clear_test_volume', player_id: volumeTarget }));
+  answerListener(true);
+}
+
+async function volumeStep() {
+  if (!socketOpen()) {
+    setStatus(t('disconnected'), 'err');
+    return;
+  }
+  setBusy(true);
+  setProgress(0);
+  resetLive();
+  // The meter is the objective half of "well audible here"; without the
+  // microphone the step still works by ear alone.
+  try {
+    await openMicrophone();
+    if (audio.state === 'suspended') await audio.resume();
+    showLive(true);
+  } catch (error) {
+    showLive(false);
+  }
+  setStatus(t('volume_running'), 'live');
+  socket.send(JSON.stringify({ type: 'volume' }));
+}
+
+function volumeDone() {
+  el('ask').hidden = true;
+  volumeTarget = null;
+  setBusy(false);
+  // The kept test volumes come back with the player list.
+  refreshPlayers().then(() => {
+    const kept = players.filter((p) => p.test_volume !== null && p.test_volume !== undefined);
+    setStatus(kept.length
+      ? t('volume_done', { list: kept.map((p) => `${p.name} ${p.test_volume} %`).join(', ') })
+      : t('volume_none'), 'ok');
+  });
 }
 
 function speakerTestDone(message) {
@@ -689,6 +791,10 @@ function handle(message) {
 
     case 'speaker_test_done':
       speakerTestDone(message);
+      break;
+
+    case 'volume_done':
+      volumeDone();
       break;
 
     case 'record_stop':
@@ -910,6 +1016,11 @@ function speakerRow(p, unfolded) {
         : ['off', p.excluded_because || t('not_taking_part')];
 
   const info = [`${t('transport')}: ${escapeHtml(p.transport)}`];
+  if (p.volume !== null && p.volume !== undefined) {
+    info.push(`${t('music_volume')}: ${p.volume} %`
+      + (p.test_volume !== null && p.test_volume !== undefined
+        ? ` · ${t('test_volume')}: ${p.test_volume} %` : ''));
+  }
   if (p.sync_adjust_key) {
     info.push(`${t('delay_now')}: ${p.sync_adjust_ms} ${t('ms')}`);
   } else if (p.renders_audio !== false) {
@@ -1237,6 +1348,9 @@ el('listen').addEventListener('click', listen);
 el('mictest').addEventListener('click', toggleMicTest);
 el('speakertest').addEventListener('click', speakerTest);
 el('ask-yes').addEventListener('click', () => answerListener(true));
+el('ask-slider').addEventListener('input', slideVolume);
+el('ask-reset').addEventListener('click', resetVolume);
+el('volumestep').addEventListener('click', volumeStep);
 el('ask-no').addEventListener('click', () => answerListener(false));
 el('human-ok').addEventListener('click', () => sendFeedback(true));
 el('human-wrong').addEventListener('click', () => sendFeedback(false));

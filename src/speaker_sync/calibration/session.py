@@ -783,6 +783,7 @@ async def measure_repeatedly(
     signal_url="",
     sleep: Sleeper = asyncio.sleep,
     progress: ProgressCallback | None = None,
+    louder: Callable[[str], Awaitable[None]] | None = None,
 ) -> CombinedPasses:
     """Measure until two passes agree, up to the configured ceiling.
 
@@ -815,6 +816,13 @@ async def measure_repeatedly(
                 progress=progress,
             )
         )
+        # A speaker the microphone did not hear in this pass is made louder
+        # for the next one: too quiet at the measuring spot is the likeliest
+        # reason, and the one that can be fixed from here.
+        if louder is not None and len(passes) < ceiling:
+            for player_id in order:
+                if player_id not in passes[-1].latencies_ms:
+                    await louder(player_id)
         if len(passes) < wanted:
             continue
         combined = combine_passes(passes, order)
@@ -1306,7 +1314,13 @@ class PlayerStateSnapshot:
                 scope.add(player_id)
         return scope
 
-    async def restore(self, backend: SpeakerBackend) -> list[str]:
+    async def restore(
+        self,
+        backend: SpeakerBackend,
+        *,
+        volume: bool = True,
+        touched: Iterable[str] = (),
+    ) -> list[str]:
         """Put grouping, mute and volume back; return what could not be.
 
         Every step is attempted regardless of the others, because the worst
@@ -1385,6 +1399,7 @@ class PlayerStateSnapshot:
                 )
 
         # 3. Mute and volume, for the players the session itself handled.
+        touched = set(touched)
         for player_id in sorted(self.involved):
             before, current = self.states.get(player_id), now.get(player_id)
             if before is None or current is None:
@@ -1396,14 +1411,25 @@ class PlayerStateSnapshot:
                     say(en=f"the mute of «{current.name}»", ru=f"заглушение «{current.name}»"),
                     backend.set_muted(player_id, before.muted),
                 )
-            # Volume is never changed by a session, so it is put back only
-            # when it fell to nothing during one — a client that mutes by
-            # turning itself down and does not turn back up. Anything else is
-            # left alone: a volume the listener changed meanwhile is theirs, and
-            # a "before" read while such a client was still down was 0, which
-            # restoring then wrote back for good.
-            if (
-                before.volume_level
+            # A volume the session set itself — a test volume, or one raised
+            # because a speaker went unheard — goes back to where it was.
+            # Otherwise volume is put back only when it fell to nothing during
+            # the run: a client that mutes by turning itself down and does not
+            # turn back up. Anything else is left alone: a volume the listener
+            # changed meanwhile is theirs, and a "before" read while such a
+            # client was still down was 0, which restoring wrote back for good.
+            if player_id in touched:
+                if (
+                    before.volume_level is not None
+                    and current.volume_level != before.volume_level
+                ):
+                    await attempt(
+                        say(en=f"the volume of «{current.name}»", ru=f"громкость «{current.name}»"),
+                        backend.set_volume(player_id, before.volume_level),
+                    )
+            elif (
+                volume
+                and before.volume_level
                 and current.volume_level is not None
                 and current.volume_level == 0
             ):
@@ -1415,21 +1441,71 @@ class PlayerStateSnapshot:
         return problems
 
 
+class RestoreLog(list):
+    """What could not be restored — and whose volume the session changed.
+
+    A list of problems, as before, carrying the set of players whose volume
+    the session set itself, so those are put back whatever they read.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.touched: set[str] = set()
+
+
+TEST_VOLUME_STEP = 20
+"""How much louder an unheard speaker is made for the next pass."""
+
+TEST_VOLUME_FLOOR = 40
+"""The least an unheard speaker is raised to: a step from 5 is still quiet."""
+
+
+async def make_louder(backend: SpeakerBackend, player_id: str, log: RestoreLog) -> int | None:
+    """Raise one speaker's volume for the rest of this run; ``None`` if it can't go higher."""
+    players = {p.player_id: p for p in await backend.list_players()}
+    current = players[player_id].volume_level if player_id in players else None
+    if current is None or current >= 100:
+        return None
+    louder = min(100, max(current + TEST_VOLUME_STEP, TEST_VOLUME_FLOOR))
+    await backend.set_volume(player_id, louder)
+    log.touched.add(player_id)
+    return louder
+
+
 @contextlib.asynccontextmanager
-async def preserved_player_state(backend: SpeakerBackend, involved: Iterable[str]):
+async def preserved_player_state(
+    backend: SpeakerBackend,
+    involved: Iterable[str],
+    *,
+    volume: bool = True,
+    test_volumes: dict[str, int] | None = None,
+):
     """Run a block of session work and restore the players afterwards, always.
 
-    Yields a list that receives whatever could not be restored, so the caller
-    can report it alongside the session's own findings.
+    ``test_volumes`` are set first, for the players involved, and put back
+    afterwards with the rest: the level a speaker needs to be heard at the
+    measuring spot is not the level the listener plays music at.
+
+    Yields a :class:`RestoreLog` that receives whatever could not be
+    restored, so the caller can report it alongside the session's findings.
     """
+    involved = list(involved)
     snapshot = await PlayerStateSnapshot.take(backend, involved)
-    problems: list[str] = []
+    log = RestoreLog()
     try:
-        yield problems
+        for player_id, level in (test_volumes or {}).items():
+            if player_id in involved:
+                log.touched.add(player_id)
+                await backend.set_volume(player_id, int(level))
+        yield log
     finally:
         # Shielded: a cancellation arriving while the players are being put
         # back must not stop half way and leave a group behind.
-        problems.extend(await asyncio.shield(snapshot.restore(backend)))
+        log.extend(
+            await asyncio.shield(
+                snapshot.restore(backend, volume=volume, touched=set(log.touched))
+            )
+        )
 
 
 async def calibrate(
@@ -1443,6 +1519,7 @@ async def calibrate(
     verify: bool = True,
     sleep: Sleeper = asyncio.sleep,
     progress: ProgressCallback | None = None,
+    test_volumes: dict[str, int] | None = None,
 ) -> CalibrationReport:
     """Measure, correct, and then prove the correction worked.
 
@@ -1450,7 +1527,9 @@ async def calibrate(
     they were found in — see :class:`PlayerStateSnapshot`.
     """
     involved = [p.player_id for p in session_players(await backend.list_players())]
-    async with preserved_player_state(backend, involved) as restore_problems:
+    async with preserved_player_state(
+        backend, involved, test_volumes=test_volumes
+    ) as restore_problems:
         report = await _calibrate(
             backend,
             recorder,
@@ -1459,6 +1538,7 @@ async def calibrate(
             signal_url=signal_url,
             sign=sign,
             verify=verify,
+            log=restore_problems,
             sleep=sleep,
             progress=progress,
         )
@@ -1478,6 +1558,7 @@ async def _calibrate(
     verify: bool,
     sleep: Sleeper,
     progress: ProgressCallback | None,
+    log: RestoreLog | None = None,
 ) -> CalibrationReport:
     cfg = config or SessionConfig()
     players = session_players(await backend.list_players())
@@ -1491,6 +1572,15 @@ async def _calibrate(
         )
 
     names = {p.player_id: p.name for p in players}
+    raised: dict[str, int] = {}
+
+    async def louder(player_id: str) -> None:
+        if log is None:
+            return
+        level = await make_louder(backend, player_id, log)
+        if level is not None:
+            raised[player_id] = level
+
     combined = await measure_repeatedly(
         backend,
         recorder,
@@ -1500,9 +1590,22 @@ async def _calibrate(
         signal_url=signal_url,
         sleep=sleep,
         progress=progress,
+        louder=louder,
     )
     before = combined.pass_
     problems = list(before.analysis.problems)
+    for player_id, level in raised.items():
+        name = names.get(player_id, player_id)
+        problems.append(
+            say(
+                en=f"«{name}» went unheard in a pass, so it was turned up to {level} for "
+                "the next one (and back afterwards). If it keeps happening, set a test "
+                "volume for it.",
+                ru=f"«{name}» не была слышна в одном замере, поэтому для следующего её "
+                f"громкость поднята до {level} (потом возвращена). Если это повторяется, "
+                "задайте для неё тестовую громкость.",
+            )
+        )
     problems.extend(stability_problems(combined, names))
     problems.extend(_check_the_rounds_isolated(before, players))
 
@@ -1788,6 +1891,7 @@ async def check_alignment(
     sample_rates: Sequence[int] = CHECK_RATES,
     sleep: Sleeper = asyncio.sleep,
     progress: ProgressCallback | None = None,
+    test_volumes: dict[str, int] | None = None,
 ) -> AlignmentCheck:
     """Measure the group as it stands, in each track format, and write nothing.
 
@@ -1802,7 +1906,9 @@ async def check_alignment(
 
     passes: dict[int, MeasurementPass] = {}
     problems: list[str] = []
-    async with preserved_player_state(backend, [p.player_id for p in players]) as restore_problems:
+    async with preserved_player_state(
+        backend, [p.player_id for p in players], test_volumes=test_volumes
+    ) as restore_problems:
         for rate in sample_rates:
             _report(progress, stage="pass", which="check", rate=rate, players=len(players))
             pass_ = await measure_once(
@@ -1950,6 +2056,7 @@ async def speaker_test(
     config: SessionConfig | None = None,
     step_seconds: float = SPEAKER_TEST_STEP_SECONDS,
     sleep: Sleeper = asyncio.sleep,
+    test_volumes: dict[str, int] | None = None,
 ) -> SpeakerTestResult:
     """Play each speaker on its own, then none, and ask the listener each time.
 
@@ -1978,7 +2085,7 @@ async def speaker_test(
 
     alone: dict[str, bool | None] = {}
     silent: bool | None = None
-    async with preserved_player_state(backend, player_ids):
+    async with preserved_player_state(backend, player_ids, test_volumes=test_volumes):
         await release_from_other_groups(backend, player_ids, leader)
         await backend.set_group(leader, player_ids)
         await confirm_group(backend, leader, player_ids, sleep=sleep)
@@ -2008,6 +2115,95 @@ async def speaker_test(
     return SpeakerTestResult(names=names, alone=alone, silent=silent)
 
 
+VOLUME_STEP_SECONDS = 240.0
+"""How long the volume step waits on one speaker before moving on."""
+
+
+@dataclass(frozen=True)
+class VolumeResult:
+    """Where the listener left each speaker's volume."""
+
+    names: dict[str, str]
+    volumes: dict[str, int | None]
+    finished: bool
+    """False when the listener stopped before the last speaker."""
+
+
+async def volume_by_ear(
+    backend: SpeakerBackend,
+    signal_url,
+    ask: Ask,
+    *,
+    config: SessionConfig | None = None,
+    step_seconds: float = VOLUME_STEP_SECONDS,
+    sleep: Sleeper = asyncio.sleep,
+    test_volumes: dict[str, int] | None = None,
+) -> VolumeResult:
+    """Play each speaker on its own while the listener sets its volume.
+
+    Standing where the measurement will be taken, the listener brings every
+    speaker to a level that is clearly audible there — and roughly alike, so
+    that no speaker's chirps are lost next to a much louder one. The volume
+    itself is set through Music Assistant as the slider moves, by the page;
+    this only decides who is audible and when to move on.
+
+    ``ask`` returns ``True`` for the next speaker and ``False`` to stop.
+    Returns the volume each speaker was left at — its test volume, which the
+    caller keeps for measurements. Grouping, mute and the music volumes are
+    put back afterwards.
+    """
+    cfg = config or SessionConfig()
+    players = session_players(await backend.list_players())
+    if not players:
+        raise ValueError(say(en="no speaker to set", ru="нет колонок для настройки"))
+    names = {p.player_id: p.name for p in players}
+    player_ids = [p.player_id for p in players]
+    leader = player_ids[0]
+    chirps = min(512, int((len(players) + 1) * step_seconds / cfg.period_seconds) + 4)
+    signal = cfg.build_signal(chirps)
+
+    finished = True
+    chosen: dict[str, int | None] = {}
+    async with preserved_player_state(
+        backend, player_ids, test_volumes=test_volumes
+    ) as log:
+        # Whatever the listener sets here is a test volume: every speaker's
+        # music volume comes back afterwards.
+        log.touched.update(player_ids)
+        await release_from_other_groups(backend, player_ids, leader)
+        await backend.set_group(leader, player_ids)
+        await confirm_group(backend, leader, player_ids, sleep=sleep)
+        for player_id in player_ids:
+            await backend.set_muted(player_id, True)
+        await confirm_mute(backend, dict.fromkeys(player_ids, True), sleep=sleep)
+        await backend.play_url(leader, _resolve_url(signal_url, signal))
+        try:
+            for index, player in enumerate(players):
+                await backend.set_muted(player.player_id, False)
+                current = {p.player_id: p for p in await backend.list_players()}
+                answer = await ask(
+                    {
+                        "step": "volume",
+                        "player_id": player.player_id,
+                        "name": player.name,
+                        "volume": current.get(player.player_id, player).volume_level,
+                        "index": index + 1,
+                        "count": len(players),
+                    }
+                )
+                await backend.set_muted(player.player_id, True)
+                now = {p.player_id: p for p in await backend.list_players()}
+                if player.player_id in now:
+                    chosen[player.player_id] = now[player.player_id].volume_level
+                if answer is False:
+                    finished = False
+                    break
+        finally:
+            with contextlib.suppress(Exception):
+                await backend.stop(leader)
+    return VolumeResult(names=names, volumes=chosen, finished=finished)
+
+
 async def play_listening_test(
     backend: SpeakerBackend,
     url: str,
@@ -2015,6 +2211,7 @@ async def play_listening_test(
     hold_seconds: float,
     sleep: Sleeper = asyncio.sleep,
     on_playing: Callable[[list[PlayerInfo]], None] | None = None,
+    test_volumes: dict[str, int] | None = None,
 ) -> list[str]:
     """Play the click track on every speaker at once, for judging by ear.
 
@@ -2035,7 +2232,9 @@ async def play_listening_test(
                 ru="для сравнения нужно хотя бы две колонки",
             )
         )
-    async with preserved_player_state(backend, [p.player_id for p in players]) as problems:
+    async with preserved_player_state(
+        backend, [p.player_id for p in players], test_volumes=test_volumes
+    ) as problems:
         await _start_listening_test(backend, url, players, sleep=sleep)
         if on_playing is not None:
             on_playing(players)

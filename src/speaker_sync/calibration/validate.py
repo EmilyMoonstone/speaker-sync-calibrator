@@ -58,6 +58,7 @@ async def determine_sign(
     config: SessionConfig | None = None,
     signal_url: str = "",
     sleep: Sleeper = asyncio.sleep,
+    test_volumes: dict[str, int] | None = None,
 ) -> SignCheck:
     """Probe the server's convention and restore what was there before.
 
@@ -65,7 +66,7 @@ async def determine_sign(
     and volume the measurement passes changed.
     """
     involved = [p.player_id for p in await backend.list_players() if p.is_calibratable]
-    async with preserved_player_state(backend, involved):
+    async with preserved_player_state(backend, involved, test_volumes=test_volumes):
         return await _determine_sign(
             backend,
             recorder,

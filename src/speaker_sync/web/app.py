@@ -41,9 +41,11 @@ from speaker_sync.calibration.session import (
     SessionConfig,
     calibrate,
     SPEAKER_TEST_STEP_SECONDS,
+    VOLUME_STEP_SECONDS,
     check_alignment,
     play_listening_test,
     speaker_test,
+    volume_by_ear,
 )
 from speaker_sync.calibration.validate import determine_sign
 from speaker_sync.dsp.signals import (
@@ -231,6 +233,9 @@ class AppState:
     same deal the probed sign gets.
     """
 
+    test_volumes: dict[str, int] = field(default_factory=dict)
+    """How loud each speaker plays while measured, set by ear on the page."""
+
     sign: int = 1
     sign_checked: bool = False
     busy: bool = False
@@ -287,6 +292,7 @@ class AppState:
         self.sign = store.sign
         self.sign_checked = store.sign_checked
         self.disabled_players = set(store.disabled_players)
+        self.test_volumes = store.test_volumes
         if store.chirps_per_round:
             self.session_config = replace(
                 self.session_config, chirps_per_round=store.chirps_per_round
@@ -306,6 +312,14 @@ class AppState:
             self.disabled_players.add(player_id)
         if self.store is not None:
             self.store.set_player_enabled(player_id, enabled)
+
+    def set_test_volume(self, player_id: str, volume: int | None) -> None:
+        if volume is None:
+            self.test_volumes.pop(player_id, None)
+        else:
+            self.test_volumes[player_id] = max(0, min(100, int(volume)))
+        if self.store is not None:
+            self.store.set_test_volume(player_id, volume)
 
     def remember_sign(self, sign: int, checked: bool) -> None:
         self.sign = sign
@@ -588,6 +602,8 @@ def create_app(state: AppState) -> web.Application:
                         "is_sendspin": p.is_sendspin,
                         "available": p.available,
                         "sync_adjust_ms": p.sync_adjust_ms,
+                        "volume": p.volume_level,
+                        "test_volume": state.test_volumes.get(p.player_id),
                         # The manual switch, reported separately from the
                         # verdict: the UI has to draw the switch in the
                         # position the user left it, not in the position the
@@ -811,6 +827,8 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
     outbox: asyncio.Queue[dict] = asyncio.Queue()
     recorder = BrowserRecorder(socket, live=outbox.put_nowait)
     running: asyncio.Task | None = None
+    tasks: set[asyncio.Task] = set()
+    """Volume changes in flight, held so they are not collected half way."""
 
     async def pump() -> None:
         while True:
@@ -851,10 +869,25 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
                     recorder.answers.put_nowait(
                         (question if _is_number(question) else None, payload["ok"])
                     )
+            elif kind == "set_volume":
+                player_id, volume = payload.get("player_id"), payload.get("volume")
+                if isinstance(player_id, str) and _is_number(volume) and 0 <= volume <= 100:
+                    # A slider in the volume step sets the test volume: kept for
+                    # every measurement, while the music volume comes back.
+                    if payload.get("test") is True:
+                        state.set_test_volume(player_id, int(volume))
+                    tasks.add(
+                        asyncio.create_task(
+                            _set_volume(state, player_id, int(volume), outbox)
+                        )
+                    )
+            elif kind == "clear_test_volume":
+                if isinstance(payload.get("player_id"), str):
+                    state.set_test_volume(payload["player_id"], None)
             elif kind == "human_feedback":
                 if isinstance(payload.get("player_id"), str) and isinstance(payload.get("ok"), bool):
                     recorder.note_feedback(payload["player_id"], payload["ok"])
-            elif kind in {"calibrate", "probe_sign", "check", "listen", "speaker_test"}:
+            elif kind in {"calibrate", "probe_sign", "check", "listen", "speaker_test", "volume"}:
                 if running is not None and not running.done():
                     outbox.put_nowait({"type": "error", "message": _busy_message()})
                 else:
@@ -870,6 +903,14 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
             await pump_task
 
     return socket
+
+
+async def _set_volume(state: AppState, player_id: str, volume: int, outbox) -> None:
+    """One slider movement, passed straight on to Music Assistant."""
+    try:
+        await state.speakers.set_volume(player_id, volume)
+    except Exception as error:  # noqa: BLE001 - shown, not fatal
+        outbox.put_nowait({"type": "error", "message": str(error)})
 
 
 def _is_number(value) -> bool:
@@ -903,21 +944,21 @@ async def _run_job(
                 state.listen_url,
                 hold_seconds=listening_test_seconds(),
                 on_playing=lambda _: outbox.put_nowait({"type": "listening"}),
+                test_volumes=dict(state.test_volumes),
             )
             outbox.put_nowait({"type": "listening_done", "problems": problems})
             return
 
-        if kind == "speaker_test":
+        asked = 0
 
-            asked = 0
-
+        def asker(timeout: float):
             async def ask(question: dict) -> bool | None:
                 # Numbered, so a late answer to a question that already timed
                 # out is not taken as the answer to the next one.
                 nonlocal asked
                 asked += 1
                 outbox.put_nowait({"type": "speaker_test_ask", "question_id": asked, **question})
-                deadline = asyncio.get_running_loop().time() + SPEAKER_TEST_STEP_SECONDS
+                deadline = asyncio.get_running_loop().time() + timeout
                 while True:
                     left = deadline - asyncio.get_running_loop().time()
                     if left <= 0:
@@ -929,8 +970,36 @@ async def _run_job(
                     if question_id in (None, asked):
                         return ok
 
+            return ask
+
+        if kind == "volume":
+            outcome = await volume_by_ear(
+                speakers,
+                state.signal_url,
+                asker(VOLUME_STEP_SECONDS),
+                config=state.session_config,
+                test_volumes=dict(state.test_volumes),
+            )
+            outbox.put_nowait(
+                {
+                    "type": "volume_done",
+                    "finished": outcome.finished,
+                    "volumes": [
+                        {"player_id": pid, "name": outcome.names.get(pid, pid), "volume": v}
+                        for pid, v in outcome.volumes.items()
+                    ],
+                }
+            )
+            return
+
+        if kind == "speaker_test":
+            ask = asker(SPEAKER_TEST_STEP_SECONDS)
             result = await speaker_test(
-                speakers, state.signal_url, ask, config=state.session_config
+                speakers,
+                state.signal_url,
+                ask,
+                config=state.session_config,
+                test_volumes=dict(state.test_volumes),
             )
             outbox.put_nowait(
                 {
@@ -953,6 +1022,7 @@ async def _run_job(
                 config=state.session_config,
                 signal_url=state.signal_url,
                 progress=lambda event: progress({"type": "progress", **event}),
+                test_volumes=dict(state.test_volumes),
             )
             outbox.put_nowait({"type": "check", **describe_check(check)})
             return
@@ -963,6 +1033,7 @@ async def _run_job(
                 recorder,
                 config=state.session_config,
                 signal_url=state.signal_url,
+                test_volumes=dict(state.test_volumes),
             )
             state.remember_sign(check.sign, check.conclusive)
             outbox.put_nowait(
@@ -983,6 +1054,7 @@ async def _run_job(
             signal_url=state.signal_url,
             sign=state.sign,
             progress=lambda event: progress({"type": "progress", **event}),
+            test_volumes=dict(state.test_volumes),
         )
         state.last_report = report
         # A run that saw which way the corrections moved has established the

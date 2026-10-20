@@ -177,6 +177,7 @@ class ProfileStore:
         self._sign = 1
         self._sign_checked = False
         self._disabled: set[str] = set()
+        self._test_volumes: dict[str, int] = {}
         self._chirps_per_round = 0
         self._profiles: dict[str, Profile] = {}
         self._load()
@@ -224,6 +225,20 @@ class ProfileStore:
             self._disabled.add(player_id)
         self._write()
 
+    # ---------------------------------------------------------- test volumes
+
+    @property
+    def test_volumes(self) -> dict[str, int]:
+        """How loud each speaker plays while measured, by player id."""
+        return dict(self._test_volumes)
+
+    def set_test_volume(self, player_id: str, volume: int | None) -> None:
+        if volume is None:
+            self._test_volumes.pop(player_id, None)
+        else:
+            self._test_volumes[player_id] = max(0, min(100, int(volume)))
+        self._write()
+
     # -------------------------------------------------------------- profiles
 
     def list(self) -> list[Profile]:
@@ -265,6 +280,13 @@ class ProfileStore:
         self._sign_checked = bool(payload.get("sign_checked", False))
         self._disabled = {str(pid) for pid in payload.get("disabled_players") or []}
         self._chirps_per_round = int(payload.get("chirps_per_round") or 0)
+        volumes = payload.get("test_volumes") or {}
+        if isinstance(volumes, dict):
+            self._test_volumes = {
+                str(pid): max(0, min(100, int(v)))
+                for pid, v in volumes.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            }
 
         for name, entry in (payload.get("profiles") or {}).items():
             try:
@@ -279,6 +301,7 @@ class ProfileStore:
             "sign_checked": self._sign_checked,
             "disabled_players": sorted(self._disabled),
             "chirps_per_round": self._chirps_per_round,
+            "test_volumes": dict(sorted(self._test_volumes.items())),
             "profiles": {name: profile.to_dict() for name, profile in self._profiles.items()},
         }
 

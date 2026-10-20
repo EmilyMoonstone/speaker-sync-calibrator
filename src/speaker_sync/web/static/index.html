@@ -157,6 +157,10 @@
   .askq { font-size: 17px; font-weight: 600; margin: 0 0 12px; }
   .askrow { display: flex; gap: 10px; flex-wrap: wrap; }
   .askrow button { flex: 1 1 140px; margin: 0; }
+  .volrow { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; }
+  .volrow input { flex: 1; accent-color: var(--accent); height: 28px; }
+  .volrow b { min-width: 3.2em; text-align: right; font-size: 17px; }
+  #ask .link { margin: 10px 0 0; padding: 4px 0; }
 
   /* --- pills, tables ----------------------------------------------------- */
   .pill {
@@ -258,10 +262,15 @@
 
     <div class="live" id="ask" hidden>
       <p id="ask-question" class="askq"></p>
+      <div class="volrow" id="ask-volume" hidden>
+        <input id="ask-slider" type="range" min="0" max="100" step="1">
+        <b id="ask-value" class="num">—</b>
+      </div>
       <div class="askrow">
         <button id="ask-yes"></button>
         <button id="ask-no" class="secondary"></button>
       </div>
+      <button id="ask-reset" class="link" hidden data-i18n="ask_reset"></button>
     </div>
 
     <div class="live" id="live" hidden>
@@ -296,6 +305,10 @@
       <li>
         <div class="step-text"><b data-i18n="step_test"></b><span class="sub" data-i18n="step_test_hint"></span></div>
         <button id="speakertest" class="secondary small" data-i18n="speaker_test_short"></button>
+      </li>
+      <li>
+        <div class="step-text"><b data-i18n="step_volume"></b><span class="sub" data-i18n="step_volume_hint"></span></div>
+        <button id="volumestep" class="secondary small" data-i18n="volume_short"></button>
       </li>
       <li class="main">
         <div class="step-text"><b data-i18n="step_run"></b><span class="sub" data-i18n="step_run_hint"></span></div>
