@@ -107,6 +107,15 @@ def listening_test_seconds() -> float:
 # it has already arrived and this covers only the tail. It still scales with
 # the recording, because a phone reaching the app through a tunnel uploads at
 # whatever the tunnel allows, not at LAN speed.
+UPLOAD_LAG_SECONDS = 0.1
+"""How far the audio reaching us trails the microphone: one 4096-sample
+block from the browser, plus the network. Half a period is the margin the
+round schedule needs, so this need only be roughly right."""
+
+MONITOR_GRACE_SECONDS = 1.0
+"""How long to wait for the page to name its sample rate before giving up
+on anchoring the rounds to what is heard."""
+
 RECORDING_TIMEOUT_FLOOR_SECONDS = 30.0
 RECORDING_TIMEOUT_SHARE = 0.5
 """Tail allowance as a fraction of the recording's own length."""
@@ -326,6 +335,7 @@ class BrowserRecorder:
         self._timeout = RECORDING_TIMEOUT_FLOOR_SECONDS
         self._signal: TestSignal | None = None
         self._monitor: LiveMonitor | None = None
+        self._first_chirp = asyncio.Event()
         self.answers: asyncio.Queue[tuple[int | None, bool]] = asyncio.Queue()
         """Answers to the speaker test's questions: (question id, answer)."""
 
@@ -343,12 +353,16 @@ class BrowserRecorder:
         """The browser's rate, told up front so the live check can start."""
         if self._signal is not None and sample_rate > 0:
             self._monitor = LiveMonitor(self._signal, int(sample_rate))
+            # Anything already received is part of the same recording.
+            if self._chunks:
+                self._watch(np.concatenate(self._chunks))
 
     async def start(self, signal: TestSignal) -> None:
         self._chunks.clear()
         self._sample_rate = None
         self._signal = signal
         self._monitor = None
+        self._first_chirp.clear()
         self._complete.clear()
         self._timeout = max(
             RECORDING_TIMEOUT_FLOOR_SECONDS,
@@ -388,13 +402,37 @@ class BrowserRecorder:
             return
         chunk = np.frombuffer(payload[:usable], dtype=np.float32).astype(np.float64)
         self._chunks.append(chunk)
-        if self._monitor is not None and self._live is not None:
-            try:
-                for reading in self._monitor.feed(chunk):
+        self._watch(chunk)
+
+    def _watch(self, chunk: np.ndarray) -> None:
+        if self._monitor is None:
+            return
+        try:
+            for reading in self._monitor.feed(chunk):
+                if self._live is not None:
                     self._live({"type": "live", **reading.to_dict()})
-            except Exception:  # noqa: BLE001 - the live view is a nicety
-                logger.exception("live analysis failed; switching it off for this pass")
-                self._monitor = None
+        except Exception:  # noqa: BLE001 - the live view is a nicety
+            logger.exception("live analysis failed; switching it off for this pass")
+            self._monitor = None
+            return
+        if self._monitor.first_onset is not None:
+            self._first_chirp.set()
+
+    async def first_chirp(self, timeout: float) -> float | None:
+        """How long ago the first chirp reached the microphone, once it has.
+
+        ``None`` when this page does not report its sample rate, so nothing
+        is judged live; ``TimeoutError`` when nothing was heard in time.
+        """
+        if self._monitor is None:
+            await asyncio.sleep(MONITOR_GRACE_SECONDS)
+            if self._monitor is None:
+                return None
+        await asyncio.wait_for(self._first_chirp.wait(), timeout)
+        monitor = self._monitor
+        if monitor is None or monitor.first_onset is None:
+            return None
+        return (monitor.received - monitor.first_onset) / monitor.sample_rate + UPLOAD_LAG_SECONDS
 
     def complete(self, sample_rate: int) -> None:
         self._sample_rate = int(sample_rate)

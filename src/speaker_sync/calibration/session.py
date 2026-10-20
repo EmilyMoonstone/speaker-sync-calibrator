@@ -129,6 +129,19 @@ class SessionConfig:
     settle_seconds: float = 0.35
     """Pause after a mute change before the round's chirps start counting."""
 
+    align_to_first_chirp: bool = True
+    """Time the rounds from the first chirp the microphone hears.
+
+    The stream starts well after the play command — set-up, then every
+    client fills its buffer — and a schedule counted from the command
+    switched speakers early enough to cut the last chirp of a round, which
+    then measured a few milliseconds off. Anchored on what is heard, every
+    switch lands in the middle of the pause between two chirps.
+    """
+
+    first_chirp_timeout: float = 10.0
+    """How long to wait for the first chirp before calling it unheard."""
+
     measure_passes: int = 2
     """Measurements taken before anything is corrected, combined by median.
 
@@ -476,10 +489,30 @@ async def measure_once(
     clock = _clock_for(sleep)
     spent = 0.0
     due = cfg.settle_seconds
+    # Set once the first chirp has been heard: when it reached the microphone.
+    origin: float | None = None
 
     try:
         await backend.play_url(leader, _resolve_url(signal_url, signal))
+        first_chirp = getattr(recorder, "first_chirp", None)
+        if cfg.align_to_first_chirp and first_chirp is not None:
+            started = clock()
+            try:
+                ago = await first_chirp(cfg.first_chirp_timeout)
+            except TimeoutError:
+                raise RuntimeError(_unheard_message(players, rounds[0].player_id)) from None
+            if ago is not None:
+                origin = clock() - ago
+            else:
+                spent += clock() - started
+        gap = max(0.0, cfg.period_seconds - cfg.chirp_seconds)
         for index, plan in enumerate(rounds):
+            if origin is not None and index > 0:
+                # Halfway through the pause before this round's first chirp:
+                # the last chirp of the round before has ended, this one's
+                # first has not begun.
+                switch = origin + plan.first_chirp * cfg.period_seconds - gap / 2
+                await sleep(max(0.0, switch - clock()))
             began = clock()
             if plan.is_silent:
                 for player_id in player_ids if audible is None else [audible]:
@@ -504,12 +537,19 @@ async def measure_once(
                 player_id=plan.player_id,
             )
 
-            # The first round also absorbs the stream's own start-up delay.
+            if origin is not None:
+                continue
+            # Without anything heard to time against: the first round also
+            # absorbs the stream's start-up delay, as far as settle covers it.
             spent += clock() - began
             due += cfg.chirps_per_round * cfg.period_seconds
             wait = max(0.0, due - spent)
             await sleep(wait)
             spent += wait
+        if origin is not None:
+            # Until the last chirp has rung out.
+            end = origin + total_chirps(rounds) * cfg.period_seconds
+            await sleep(max(0.0, end - clock()))
     finally:
         # Each step on its own: a recorder that is gone — the browser was
         # closed — must not leave every speaker stopped mid-track and muted.
@@ -538,6 +578,7 @@ async def measure_once(
         f_end=cfg.f_end,
     )
     analysis = analyze(arrivals, rounds, sample_rate=sample_rate, guard_chirps=cfg.guard_chirps)
+    _log_pass(analysis, players, aligned=origin is not None)
 
     check = None
     if together:
@@ -564,6 +605,46 @@ async def measure_once(
         sample_rate=sample_rate,
         together=check,
     )
+
+
+def _unheard_message(players: Sequence[PlayerInfo], opening: str) -> str:
+    name = next((p.name for p in players if p.player_id == opening), opening)
+    return say(
+        en=f"the microphone heard no test sound after «{name}» started — so the rounds "
+        "could not be timed, and nothing was measured. Check that «{name}» plays, that the "
+        "page may use the microphone, and the level with “Test”.".replace("{name}", name),
+        ru=f"после запуска «{name}» микрофон не услышал тестового звука — круги не удалось "
+        "привязать ко времени, ничего не измерено. Проверьте, что «{name}» играет, что "
+        "странице разрешён микрофон, и уровень кнопкой «Проверить».".replace("{name}", name),
+    )
+
+
+def _log_pass(analysis, players: Sequence[PlayerInfo], *, aligned: bool) -> None:
+    """One line per pass in the add-on log: what was measured, and how sure.
+
+    The page shows the result; the log keeps the evidence behind it, so a
+    puzzling run can be looked into afterwards.
+    """
+    names = {p.player_id: p.name for p in players}
+    readings = ", ".join(
+        f"{names.get(pid, pid)} {r.latency_ms:.1f} ms ±{r.spread_ms:.2f} ({r.arrivals_used})"
+        for pid, r in analysis.readings.items()
+    )
+    silence = (
+        ", ".join(f"{v:.1f}" for v in analysis.silence_heard_ms)
+        if analysis.silence_heard_ms
+        else "nothing"
+    )
+    logger.info(
+        "pass (%s): %s; drift %.2f ms; silent round heard %s; %d problem(s)",
+        "timed by first chirp" if aligned else "timed by command",
+        readings or "no readings",
+        analysis.drift_ms,
+        silence,
+        len(analysis.problems),
+    )
+    for problem in analysis.problems:
+        logger.info("  %s", problem)
 
 
 STABILITY_TOLERANCE_MS = 1.5

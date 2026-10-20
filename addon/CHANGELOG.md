@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 (fork EmilyMoonstone)
+- Rounds are timed from the first chirp the microphone actually hears, and every speaker switch happens halfway through the pause between two chirps. The stream starts well after "play" (set-up and client buffers), so switching by the play command cut the last chirp of a round — heard as a clipped chirp, measured as one reading a few ms off.
+- If no test sound is heard within 10 s of the start, the pass stops with a clear message instead of measuring blind.
+- Each pass writes a one-line summary to the add-on log (readings, drift, silent round, problems).
+
 ## 0.5.0 (fork EmilyMoonstone)
 - **Simpler page.** Three numbered steps — check the microphone, speaker test, calibrate. The check, the listening test, the round length and all explanations are under "More".
 - **Results in one sentence** with a mark (in sync / better but … / nothing written because …). Notes and the per-speaker table open on request, and by themselves when something is wrong.

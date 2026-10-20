@@ -116,6 +116,14 @@ class LiveMonitor:
         self._pending = np.zeros(0, dtype=np.float64)
         self._consumed = 0
         """Samples already stepped past, for the readings' timestamps."""
+        self.first_onset: int | None = None
+        """Sample at which the first chirp heard begins, counted from the
+        start of the recording — what the round schedule is anchored on."""
+
+    @property
+    def received(self) -> int:
+        """Samples fed so far."""
+        return self._consumed + len(self._pending)
 
     def feed(self, samples: np.ndarray) -> list[LiveReading]:
         """Take the next block of audio; return the windows it completed."""
@@ -140,6 +148,9 @@ class LiveMonitor:
         noise = estimate_noise_floor(envelope)
         threshold = detection_threshold(noise, len(envelope), DEFAULT_MIN_PSR_DB)
         strongest = float(np.max(envelope)) if len(envelope) else 0.0
+        if self.first_onset is None and threshold > 0.0 and strongest >= threshold:
+            # Index i of the envelope scores a chirp starting at sample i.
+            self.first_onset = self._consumed + int(np.argmax(envelope))
         margin = (
             None
             if threshold <= 0.0 or strongest <= 0.0

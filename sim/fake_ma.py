@@ -106,6 +106,11 @@ class FakeMusicAssistant:
     plays: int = field(default=0, init=False)
     """How many times playback has started."""
 
+    stream_start_seconds: float = 0.0
+    """How long after "play" the audio actually starts, as on a real server:
+    the stream is set up, and each client fills its buffer first. A round
+    schedule counted from the play command is that much early."""
+
     command_seconds: float = 0.0
     """How long a mute command takes to come back, as a slow server's would.
     It takes effect when it returns."""
@@ -334,6 +339,27 @@ class FakeMusicAssistant:
         extra = wander[(self.plays - 1) % len(wander)]
         return replace(speaker, hardware_latency_ms=speaker.hardware_latency_ms + extra)
 
+    def first_chirp_heard_at(self) -> float | None:
+        """When the first chirp reaches the microphone, on the virtual clock.
+
+        From the speakers audible as the stream starts — the session opens
+        the first round's speaker before playing. ``None`` when none is.
+        """
+        if self._playback_started is None:
+            return None
+        start = self._playback_started + self.stream_start_seconds
+        audible = [
+            self._as_this_time(s)
+            for s in self.speakers
+            if s.player_id not in self.ungroupable
+            and (not self._stream_to or s.player_id in self._stream_to)
+            and self.plays not in self.dropouts.get(s.player_id, set())
+            and s.player_id in self._audible_at(start)
+        ]
+        if not audible:
+            return None
+        return start + min(s.total_latency_ms for s in audible) / 1000.0
+
     def reference_chirp(self, sample_rate: int | None = None) -> np.ndarray:
         cfg = self.config
         return exponential_sweep(
@@ -349,7 +375,7 @@ class FakeMusicAssistant:
         Times are rebased onto the stream's own timeline, since that is what
         the room schedules chirps against.
         """
-        start = self._playback_started or 0.0
+        start = (self._playback_started or 0.0) + self.stream_start_seconds
         end = chirp_count * config.period_seconds
 
         moments = sorted({0.0, *(max(e.at - start, 0.0) for e in self._mutes)})
@@ -387,6 +413,23 @@ class SimulatedRecorder:
 
     async def stop(self) -> tuple[np.ndarray, int]:
         return self._server.render_recording(self._chirp_count)
+
+    DETECTION_SECONDS = 1.6
+    """How long after a chirp the live view has heard it: one window."""
+
+    async def first_chirp(self, timeout: float) -> float | None:
+        """How long ago the first chirp reached the microphone, once heard.
+
+        Mirrors the browser recorder: it waits until the chirp would have
+        been picked out of the stream, on the simulator's clock.
+        """
+        clock = self._server.clock
+        heard_at = self._server.first_chirp_heard_at()
+        if heard_at is None or heard_at + self.DETECTION_SECONDS - clock.now > timeout:
+            await clock.sleep(timeout)
+            raise TimeoutError
+        await clock.sleep(max(0.0, heard_at + self.DETECTION_SECONDS - clock.now))
+        return clock.now - heard_at
 
 
 def mixed_speakers() -> list[VirtualSpeaker]:
