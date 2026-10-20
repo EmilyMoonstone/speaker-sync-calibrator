@@ -137,8 +137,9 @@ class FakeConfig:
 
 
 class FakeClient:
-    def __init__(self, players, entries=None, refuse_entries=None):
+    def __init__(self, players, entries=None, refuse_entries=None, values=None):
         self.players = FakePlayers(players)
+        self.values = values or {}
         self.player_queues = FakeQueues()
         self.config = FakeConfig(entries or {})
         self.refuse_entries = refuse_entries or {}
@@ -147,6 +148,11 @@ class FakeClient:
 
     async def send_command(self, command, **kwargs):
         self.commands.append((command, kwargs))
+        if command == "config/players/get_value":
+            key = (kwargs["player_id"], kwargs["key"])
+            if key not in self.values:
+                raise RuntimeError(f"no value for {key}")
+            return self.values[key]
         if command != "config/players/get_entries":
             raise AssertionError(f"unexpected command {command}")
 
@@ -911,3 +917,47 @@ def test_an_entry_spelled_current_value_is_read():
     entry = ConfigEntryView.from_wire({"key": "sendspin_static_delay", "current_value": 8})
 
     assert entry.value == 8
+
+
+async def test_the_delay_in_force_is_read_from_the_protocol_player():
+    """The live Anlage: the parent's prefixed copy had never been set and read
+    as 0, while the Sendspin protocol player behind it played with 137 ms. The
+    calibration wrote 51 to bring it forward and moved it 86 ms back."""
+    key = f"anlage{SPLIT}sendspin_static_delay"
+    client = FakeClient(
+        [FakePlayer("up1", "Anlage", active_output_protocol="anlage")],
+        entries={
+            "up1": [FakeEntry(key, range=(0, 5000), default_value=0)],
+            "anlage": [FakeEntry("sendspin_static_delay", range=(0, 5000), value=137)],
+        },
+    )
+    adapter = MusicAssistantBackend(client)
+
+    players = await adapter.list_players()
+
+    assert players[0].sync_adjust_ms == 137
+    assert await adapter.get_sync_adjust("up1") == 137
+
+
+async def test_a_protocol_player_without_a_listed_value_is_asked_for_it():
+    key = f"anlage{SPLIT}sendspin_static_delay"
+    client = FakeClient(
+        [FakePlayer("up1", "Anlage", active_output_protocol="anlage")],
+        entries={
+            "up1": [FakeEntry(key, range=(0, 5000), default_value=0)],
+            "anlage": [FakeEntry("sendspin_static_delay", range=(0, 5000), default_value=0)],
+        },
+        values={("anlage", "sendspin_static_delay"): 137},
+    )
+
+    assert await MusicAssistantBackend(client).get_sync_adjust("up1") == 137
+
+
+async def test_with_nothing_to_go_on_the_parents_copy_is_used():
+    key = f"anlage{SPLIT}sendspin_static_delay"
+    client = FakeClient(
+        [FakePlayer("up1", "Anlage", active_output_protocol="anlage")],
+        entries={"up1": [FakeEntry(key, range=(0, 5000), value=40)]},
+    )
+
+    assert await MusicAssistantBackend(client).get_sync_adjust("up1") == 40

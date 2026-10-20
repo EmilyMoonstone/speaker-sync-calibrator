@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.1 (fork EmilyMoonstone)
+- Fix: a speaker whose delay belongs to a linked protocol (a universal player over Sendspin) was read as 0 when Music Assistant's copy on the player itself had never been set — while the protocol player behind it played with a different delay. The calibration then started from the wrong value and moved that speaker the wrong way (live: 137 ms read as 0, 51 written, 86 ms later instead of 51 earlier). The delay is now read where it takes effect.
+
 ## 0.7.0 (fork EmilyMoonstone)
 - **Sync test.** One button below the steps: a single short round measures whether all speakers play together right now, with every setting in force — Music Assistant's delays, a client's own, a mixer's output delay — and changes nothing. In sync, or which speaker is how many ms after which.
 

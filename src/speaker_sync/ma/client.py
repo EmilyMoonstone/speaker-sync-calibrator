@@ -250,6 +250,7 @@ class MusicAssistantBackend:
         for player in self._client.players.players:
             entries, config_error = await self._config_entries(player.player_id)
             delay = find_delay_entry(entries, getattr(player, "active_output_protocol", None))
+            in_force = await self._value_in_force(player.player_id, delay)
             players.append(
                 PlayerInfo(
                     player_id=player.player_id,
@@ -278,7 +279,7 @@ class MusicAssistantBackend:
                     synced_to=getattr(player, "synced_to", None) or None,
                     active_group=getattr(player, "active_group", None) or None,
                     can_mute=_supports(player, "volume_mute"),
-                    sync_adjust_ms=_current_value(delay),
+                    sync_adjust_ms=in_force,
                     sync_adjust_key=delay.key if delay is not None else None,
                     delay_protocol=_delay_protocol(player, delay),
                     delay_range_ms=_delay_range(delay),
@@ -323,7 +324,52 @@ class MusicAssistantBackend:
 
     async def get_sync_adjust(self, player_id: str) -> int:
         entries, _ = await self._config_entries(player_id)
-        return _current_value(find_delay_entry(entries, self._active_protocol(player_id)))
+        delay = find_delay_entry(entries, self._active_protocol(player_id))
+        return await self._value_in_force(player_id, delay)
+
+    async def _value_in_force(self, player_id: str, entry) -> int:
+        """The delay the speaker actually plays with.
+
+        A linked protocol's delay shows on the parent under a prefixed key, but
+        what reaches the speaker is the protocol player's own setting — and the
+        parent's copy can be empty while that one is set. Read from the copy, a
+        live Anlage at 137 ms was taken for 0, the calibration wrote 51 to
+        bring it forward and moved it 86 ms back instead.
+        """
+        if entry is None:
+            return 0
+        if PROTOCOL_KEY_SPLITTER in entry.key:
+            target, key = entry.key.split(PROTOCOL_KEY_SPLITTER, 1)
+            stored = await self._stored_value(target, key)
+            if stored is None:
+                stored = await self._config_value(target, key)
+            if stored is not None:
+                if entry.value is not None and _as_int(entry.value) != stored:
+                    logger.warning(
+                        "%s shows %s=%s, but protocol player %s plays with %s; using %s",
+                        player_id,
+                        entry.key,
+                        entry.value,
+                        target,
+                        stored,
+                        stored,
+                    )
+                return stored
+        return _current_value(entry)
+
+    async def _config_value(self, player_id: str, key: str) -> int | None:
+        """One setting as the server applies it, or ``None`` when it will not say."""
+        try:
+            value = await self._command(
+                self._client.send_command("config/players/get_value", player_id=player_id, key=key)
+            )
+        except Exception as error:  # noqa: BLE001 - any failure means "unknown"
+            logger.warning("could not read %s of player %s: %s", key, player_id, error)
+            return None
+        try:
+            return None if value is None else _as_int(value)
+        except (TypeError, ValueError):
+            return None
 
     async def set_sync_adjust(self, player_id: str, milliseconds: int) -> None:
         # Looked up rather than assumed: the key differs between Music
