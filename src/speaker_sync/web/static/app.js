@@ -148,6 +148,14 @@ const STRINGS = {
     verdict_improved: (v) => `Better, but still ${v.ms} ms apart — see the notes.`,
     verdict_nothing: 'Nothing written — see the notes.',
     verdict_failed: 'Not better after correcting — see the notes.',
+    quick_title: 'Sync test',
+    quick_hint: 'Already set up? One short round: do all speakers play together right now,'
+      + ' with every setting in force — here and outside. Changes nothing.',
+    quick_button: 'Test',
+    quick_result: 'Sync test',
+    quick_ok: (v) => `In sync — all speakers play together (${v.ms} ms apart).`,
+    quick_apart: (v) => `Not in sync: «${v.late}» plays ${v.ms} ms after «${v.early}».`,
+    quick_in_sync: 'In sync with the settings as they are, and with every speaker playing.',
     check_ok: (v) => `In sync: ${v.ms} ms apart.`,
     check_apart: (v) => `${v.ms} ms apart — calibrate.`,
     check_close: (v) => `Close (${v.ms} ms), with remarks.`,
@@ -334,6 +342,14 @@ const STRINGS = {
     verdict_improved: (v) => `Лучше, но всё ещё ${v.ms} мс — см. замечания.`,
     verdict_nothing: 'Ничего не записано — см. замечания.',
     verdict_failed: 'После поправки не стало лучше — см. замечания.',
+    quick_title: 'Тест синхронности',
+    quick_hint: 'Уже настроено? Один короткий круг: играют ли все колонки вместе прямо сейчас,'
+      + ' со всеми действующими настройками — здесь и снаружи. Ничего не меняет.',
+    quick_button: 'Тест',
+    quick_result: 'Тест синхронности',
+    quick_ok: (v) => `Синхронно — все колонки играют вместе (расхождение ${v.ms} мс).`,
+    quick_apart: (v) => `Не синхронно: «${v.late}» звучит на ${v.ms} мс позже, чем «${v.early}».`,
+    quick_in_sync: 'Синхронно с текущими настройками, и когда играют все сразу.',
     check_ok: (v) => `Синхронно: расхождение ${v.ms} мс.`,
     check_apart: (v) => `Расхождение ${v.ms} мс — откалибруйте.`,
     check_close: (v) => `Почти (${v.ms} мс), есть замечания.`,
@@ -443,6 +459,7 @@ function refreshControls() {
   el('speakertest').disabled = busy || !runnable;
   el('volumestep').disabled = busy || !players.some((p) => p.measured);
   el('check').disabled = busy || !runnable;
+  el('synctest').disabled = busy || !runnable;
   el('listen').disabled = busy || !runnable;
   el('refresh').disabled = busy;
   document.querySelectorAll('#players .switch, #unused .switch').forEach((b) => { b.disabled = busy; });
@@ -871,8 +888,9 @@ function onProgress(message) {
         ? t('measuring_attempt', { attempt: message.attempt, planned: message.planned })
         : t('measuring'), 'live');
     } else if (message.which === 'check') {
-      passOffset = message.rate === 48000 ? 0.5 : 0;
-      passSpan = 0.5;
+      const of = Math.max(message.of || 1, 1);
+      passOffset = (message.index || 0) / of;
+      passSpan = 1 / of;
       setStatus(t('measuring'), 'live');
     } else {
       passOffset = 1 - 1 / Math.max(planned, 2);
@@ -1172,10 +1190,14 @@ function showCheck(check) {
   setProgress(1);
 
   const spread = check.spread_ms;
+  const quick = check.quick;
+  el('check-title').textContent = t(quick ? 'quick_result' : 'check_result');
   const [kind, text] = check.in_sync
-    ? ['good', t('check_ok', { ms: msText(spread) })]
+    ? ['good', t(quick ? 'quick_ok' : 'check_ok', { ms: msText(spread) })]
     : spread > 2
-      ? ['bad', t('check_apart', { ms: msText(spread) })]
+      ? ['bad', quick && check.latest && check.earliest
+        ? t('quick_apart', { ms: msText(spread), late: check.latest, early: check.earliest })
+        : t('check_apart', { ms: msText(spread) })]
       : ['warn', t('check_close', { ms: msText(spread) })];
   setVerdict('check-verdict', kind, text);
   el('check-spread').textContent = msText(spread);
@@ -1194,7 +1216,7 @@ function showCheck(check) {
     + `<caption class="sub">${t('offset_from_first')}</caption>`;
 
   const notes = check.problems.map((p) => ['bad', p]);
-  if (check.in_sync) notes.push(['', t('in_sync')]);
+  if (check.in_sync) notes.push(['', t(quick ? 'quick_in_sync' : 'in_sync')]);
   if (check.together && check.together.confirmed) {
     notes.push(['', t('together_ok', { spread: check.together.spread_ms.toFixed(1) })]);
   }
@@ -1344,6 +1366,7 @@ async function start(kind) {
 el('chirps').addEventListener('input', describeRoundLength);
 el('run').addEventListener('click', () => start('calibrate'));
 el('check').addEventListener('click', () => start('check'));
+el('synctest').addEventListener('click', () => start('sync_test'));
 el('listen').addEventListener('click', listen);
 el('mictest').addEventListener('click', toggleMicTest);
 el('speakertest').addEventListener('click', speakerTest);

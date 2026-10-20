@@ -43,6 +43,7 @@ from speaker_sync.calibration.session import (
     SPEAKER_TEST_STEP_SECONDS,
     VOLUME_STEP_SECONDS,
     check_alignment,
+    sync_test,
     play_listening_test,
     speaker_test,
     volume_by_ear,
@@ -887,7 +888,15 @@ async def _websocket_handler(request: web.Request) -> web.WebSocketResponse:
             elif kind == "human_feedback":
                 if isinstance(payload.get("player_id"), str) and isinstance(payload.get("ok"), bool):
                     recorder.note_feedback(payload["player_id"], payload["ok"])
-            elif kind in {"calibrate", "probe_sign", "check", "listen", "speaker_test", "volume"}:
+            elif kind in {
+                "calibrate",
+                "probe_sign",
+                "check",
+                "sync_test",
+                "listen",
+                "speaker_test",
+                "volume",
+            }:
                 if running is not None and not running.done():
                     outbox.put_nowait({"type": "error", "message": _busy_message()})
                 else:
@@ -1015,8 +1024,9 @@ async def _run_job(
             )
             return
 
-        if kind == "check":
-            check = await check_alignment(
+        if kind in ("check", "sync_test"):
+            measure = check_alignment if kind == "check" else sync_test
+            check = await measure(
                 speakers,
                 recorder,
                 config=state.session_config,
@@ -1074,9 +1084,13 @@ def describe_check(check: AlignmentCheck) -> dict:
     rates = list(check.passes)
     offsets = {rate: check.offsets_ms(rate) for rate in rates}
     together = check.together
+    names = check.names
     return {
         "spread_ms": round(check.spread_ms, 1),
         "in_sync": check.in_sync,
+        "quick": len(rates) == 1,
+        "earliest": names.get(check.earliest, check.earliest) if check.earliest else None,
+        "latest": names.get(check.latest, check.latest) if check.latest else None,
         "rates": rates,
         "problems": list(check.problems),
         "together": (

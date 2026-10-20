@@ -1902,6 +1902,18 @@ class AlignmentCheck:
     def in_sync(self) -> bool:
         return not self.problems and self.spread_ms <= AUDIBLE_SPREAD_MS
 
+    @property
+    def earliest(self) -> str | None:
+        """The speaker heard first in the main pass."""
+        latencies = self.main.latencies_ms
+        return min(latencies, key=latencies.__getitem__) if latencies else None
+
+    @property
+    def latest(self) -> str | None:
+        """The speaker heard last in the main pass."""
+        latencies = self.main.latencies_ms
+        return max(latencies, key=latencies.__getitem__) if latencies else None
+
 
 async def check_alignment(
     backend: SpeakerBackend,
@@ -1930,8 +1942,16 @@ async def check_alignment(
     async with preserved_player_state(
         backend, [p.player_id for p in players], test_volumes=test_volumes
     ) as restore_problems:
-        for rate in sample_rates:
-            _report(progress, stage="pass", which="check", rate=rate, players=len(players))
+        for index, rate in enumerate(sample_rates):
+            _report(
+                progress,
+                stage="pass",
+                which="check",
+                rate=rate,
+                index=index,
+                of=len(sample_rates),
+                players=len(players),
+            )
             pass_ = await measure_once(
                 backend,
                 recorder,
@@ -2002,6 +2022,36 @@ async def check_alignment(
         )
 
     return replace(check, problems=tuple(dict.fromkeys(problems)))
+
+
+async def sync_test(
+    backend: SpeakerBackend,
+    recorder: Recorder,
+    *,
+    config: SessionConfig | None = None,
+    signal_url="",
+    sleep: Sleeper = asyncio.sleep,
+    progress: ProgressCallback | None = None,
+    test_volumes: dict[str, int] | None = None,
+) -> AlignmentCheck:
+    """Do the speakers play together, as everything is set right now?
+
+    One pass in the format music uses, every speaker together at the end, and
+    nothing written. It asks no more than that: whatever delays are in force —
+    the ones in Music Assistant, a client's own, a mixer's output delay — are
+    heard as they are, so it also tells whether settings made outside this
+    add-on still hold.
+    """
+    return await check_alignment(
+        backend,
+        recorder,
+        config=config,
+        signal_url=signal_url,
+        sample_rates=CHECK_RATES[:1],
+        sleep=sleep,
+        progress=progress,
+        test_volumes=test_volumes,
+    )
 
 
 SPEAKER_TEST_STEP_SECONDS = 45.0

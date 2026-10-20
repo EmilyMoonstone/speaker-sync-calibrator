@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.0 (fork EmilyMoonstone)
+- **Sync test.** One button below the steps: a single short round measures whether all speakers play together right now, with every setting in force — Music Assistant's delays, a client's own, a mixer's output delay — and changes nothing. In sync, or which speaker is how many ms after which.
+
 ## 0.6.1 (fork EmilyMoonstone)
 - When the reference arrives too late to be met, the report says per speaker how much later it would have to play — the hold-back to add outside Music Assistant (the player's own delay, or an output delay such as Voicemeeter's) before calibrating again.
 

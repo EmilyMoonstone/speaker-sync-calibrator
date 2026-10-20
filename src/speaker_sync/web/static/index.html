@@ -117,6 +117,7 @@
   .step-text b { display: block; font-weight: 600; }
   .steps li.main { flex-wrap: wrap; }
   .steps li.main button { flex: 1 1 100%; margin-top: 4px; }
+  .quick { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
 
   /* --- details on request ---------------------------------------------- */
   details > summary {
@@ -316,6 +317,11 @@
       </li>
     </ol>
 
+    <div class="quick">
+      <div class="step-text"><b data-i18n="quick_title"></b><span class="sub" data-i18n="quick_hint"></span></div>
+      <button id="synctest" class="secondary small" data-i18n="quick_button"></button>
+    </div>
+
     <details class="more" id="more">
       <summary data-i18n="more"></summary>
       <div class="more-body">
@@ -361,7 +367,7 @@
   </section>
 
   <section class="card hidden" id="check-result">
-    <h2 data-i18n="check_result"></h2>
+    <h2 id="check-title" data-i18n="check_result"></h2>
     <p class="verdict" id="check-verdict"></p>
     <details id="check-notes-box">
       <summary id="check-notes-summary"></summary>
