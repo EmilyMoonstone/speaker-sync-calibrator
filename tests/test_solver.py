@@ -284,3 +284,22 @@ def test_a_reference_is_never_among_the_writable_corrections():
     solution = solve([sendspin("pc", 140.0), reference("pixel", 100.0)])
 
     assert [c.player_id for c in solution.writable()] == ["pc"]
+
+
+def test_a_late_reference_says_how_much_each_speaker_would_need_holding_back():
+    """The live numbers: PC at 0, the hi-fi at +31.7, the phone on Bluetooth
+    at +82.3. To meet the phone, the PC has to play 82 ms later and the hi-fi
+    51 ms later than their setting allows — the hold-back to add elsewhere."""
+    solution = solve([sendspin("pc", 0.0), sendspin("hifi", 31.7), reference("pixel", 82.3)])
+
+    assert solution.strategy == "reference_too_late"
+    assert solution.held_back_needed_ms == {
+        "pc": pytest.approx(82.3),
+        "hifi": pytest.approx(50.6),
+    }
+
+
+def test_a_reachable_reference_needs_no_holding_back():
+    solution = solve([sendspin("pc", 140.0), reference("pixel", 100.0)])
+
+    assert solution.held_back_needed_ms == {}

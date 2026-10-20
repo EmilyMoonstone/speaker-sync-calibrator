@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.1 (fork EmilyMoonstone)
+- When the reference arrives too late to be met, the report says per speaker how much later it would have to play — the hold-back to add outside Music Assistant (the player's own delay, or an output delay such as Voicemeeter's) before calibrating again.
+
 ## 0.6.0 (fork EmilyMoonstone)
 - **Test volume, by ear** (new step 3): each speaker plays on its own while you slide its volume until the microphone hears it well at the measuring spot — the meter shows it. The values are kept as test volumes, used for every measurement, and your music volume comes back afterwards.
 - A speaker the microphone does not hear in a pass is turned up for the next one by itself (+20, at least 40), and back afterwards.

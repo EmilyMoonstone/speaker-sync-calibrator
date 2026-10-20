@@ -396,6 +396,27 @@ def solution_problems(solution: CalibrationSolution) -> list[str]:
                 "здесь, чтобы выровнять остальные между собой.",
             )
         )
+    if solution.held_back_needed_ms and references:
+        by_id = {c.player_id: c.name for c in solution.corrections}
+        ref = ", ".join(f"«{c.name}»" for c in references)
+        needs = ", ".join(
+            f"«{by_id.get(pid, pid)}» {ms:.0f} ms"
+            for pid, ms in sorted(solution.held_back_needed_ms.items(), key=lambda kv: -kv[1])
+        )
+        problems.append(
+            say(
+                en=f"To include {ref}, these speakers would have to play later than their delay "
+                f"setting allows: {needs}. Hold them back outside Music Assistant by at least "
+                "that much, with some margin — the player's own delay (sendspin-cli: "
+                "delay-playback), or an output delay in the sound chain (e.g. Voicemeeter) — "
+                "then calibrate again: the setting brings each one forward exactly as far as needed.",
+                ru=f"Чтобы учесть {ref}, этим колонкам пришлось бы играть позже, чем позволяет их "
+                f"настройка задержки: {needs}. Задержите их вне Music Assistant хотя бы на столько, "
+                "с запасом — собственной задержкой плеера (sendspin-cli: delay-playback) или "
+                "задержкой выхода в звуковой цепочке (например, Voicemeeter), — и откалибруйте "
+                "снова: настройка вернёт каждую ровно настолько, насколько нужно.",
+            )
+        )
     if len(references) > 1 and solution.reference_disagreement_ms > AUDIBLE_SPREAD_MS:
         names = ", ".join(f"«{c.name}»" for c in references)
         apart = solution.reference_disagreement_ms

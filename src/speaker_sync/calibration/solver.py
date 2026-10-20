@@ -8,7 +8,7 @@ integer millisecond correction inside Music Assistant's ``sync_adjust`` range.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Music Assistant's CONF_SYNC_ADJUST is an integer config entry clamped to
 # this range (music_assistant/constants.py).
@@ -141,6 +141,12 @@ class CalibrationSolution:
     """
 
     reference_disagreement_ms: float = 0.0
+
+    held_back_needed_ms: dict[str, float] = field(default_factory=dict)
+    """When the reference is out of reach: per speaker, how much later it
+    would have to play than its own setting can make it — the hold-back to
+    add outside the server (a client's own delay, an output delay) for the
+    reference to be met."""
     """How far apart several references arrive among themselves.
 
     They cannot all be met at once; the target sits halfway between the
@@ -228,6 +234,7 @@ def solve(
     reach_high = min(high for _, high in windows.values())
 
     reference_late_ms: float | None = None
+    held_back: dict[str, float] = {}
     disagreement = 0.0
     fixed = [m for m in measurements if m.fixed]
     if fixed:
@@ -246,6 +253,11 @@ def solve(
             if target > high + REACH_TOLERANCE_MS:
                 # Later than anyone can be moved to: leave everything be.
                 reference_late_ms = target - high
+                held_back = {
+                    m.player_id: target - windows[m.player_id][1]
+                    for m in measurements
+                    if not m.fixed and target - windows[m.player_id][1] > REACH_TOLERANCE_MS
+                }
                 strategy = "reference_too_late"
             elif low <= high:
                 target = min(max(target, low), high)
@@ -290,4 +302,5 @@ def solve(
         spread_after_ms=max(landings) - min(landings),
         reference_late_ms=reference_late_ms,
         reference_disagreement_ms=disagreement,
+        held_back_needed_ms=held_back,
     )
