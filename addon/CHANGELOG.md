@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.2 (fork EmilyMoonstone)
+- Fix: a speaker's current delay could read as 0 for every player, not only linked protocols — Music Assistant sends the value as `current_value` next to an empty `value`, and the empty one won. When a setting arrives without its value, the add-on now asks Music Assistant for it directly. Read-back after a write now sees the real value too.
+
 ## 0.7.1 (fork EmilyMoonstone)
 - Fix: a speaker whose delay belongs to a linked protocol (a universal player over Sendspin) was read as 0 when Music Assistant's copy on the player itself had never been set — while the protocol player behind it played with a different delay. The calibration then started from the wrong value and moved that speaker the wrong way (live: 137 ms read as 0, 51 written, 86 ms later instead of 51 earlier). The delay is now read where it takes effect.
 

@@ -553,8 +553,12 @@ async def test_the_settings_request_does_not_go_through_the_typed_model(backend)
 
     await adapter.list_players()
 
-    assert [c[0] for c in client.commands] == ["config/players/get_entries"] * 2
-    assert client.commands[0][1]["player_id"] == "esp32"
+    entries = [c for c in client.commands if c[0] == "config/players/get_entries"]
+    assert [c[1]["player_id"] for c in entries] == ["esp32", "bt"]
+    assert {c[0] for c in client.commands} <= {
+        "config/players/get_entries",
+        "config/players/get_value",
+    }
 
 
 async def test_a_hidden_or_read_only_entry_is_not_used():
@@ -961,3 +965,29 @@ async def test_with_nothing_to_go_on_the_parents_copy_is_used():
     )
 
     assert await MusicAssistantBackend(client).get_sync_adjust("up1") == 40
+
+
+def test_an_empty_value_does_not_hide_the_current_one():
+    """The live PC: Music Assistant sent ``current_value`` 92 beside an empty
+    ``value``, and the empty one won — the speaker read as its default 0."""
+    from speaker_sync.ma.client import ConfigEntryView
+
+    entry = ConfigEntryView.from_wire(
+        {"key": "sendspin_static_delay", "value": None, "current_value": 92, "default_value": 0}
+    )
+
+    assert entry.value == 92
+
+
+async def test_a_player_whose_entry_carries_no_value_is_asked_for_it():
+    client = FakeClient(
+        [FakePlayer("pc", "PC", provider="sendspin")],
+        entries={"pc": [FakeEntry("sendspin_static_delay", range=(0, 5000), default_value=0)]},
+        values={("pc", "sendspin_static_delay"): 92},
+    )
+    adapter = MusicAssistantBackend(client)
+
+    (player,) = await adapter.list_players()
+
+    assert player.sync_adjust_ms == 92
+    assert await adapter.get_sync_adjust("pc") == 92

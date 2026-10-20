@@ -124,8 +124,14 @@ class ConfigEntryView:
             type=str(raw.get("type") or ""),
             label=str(raw.get("label") or ""),
             range=tuple(span) if isinstance(span, (list, tuple)) and len(span) == 2 else None,
-            # Spelled either way depending on the server release.
-            value=raw.get("value", raw.get("current_value")),
+            # Spelled either way depending on the server release, and a server
+            # can send both with ``value`` left empty: the empty one must not
+            # hide the other, or a speaker at 92 ms reads as its default 0.
+            value=(
+                raw.get("current_value")
+                if raw.get("current_value") is not None
+                else raw.get("value")
+            ),
             default_value=raw.get("default_value"),
             hidden=bool(raw.get("hidden")),
             read_only=bool(raw.get("read_only")),
@@ -354,6 +360,10 @@ class MusicAssistantBackend:
                         stored,
                         stored,
                     )
+                return stored
+        elif entry.value is None:
+            stored = await self._config_value(player_id, entry.key)
+            if stored is not None:
                 return stored
         return _current_value(entry)
 
