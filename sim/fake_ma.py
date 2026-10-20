@@ -111,6 +111,15 @@ class FakeMusicAssistant:
     the stream is set up, and each client fills its buffer first. A round
     schedule counted from the play command is that much early."""
 
+    zeroes_volume_on_mute: set[str] = field(default_factory=set)
+    """Speakers whose client mutes by turning its volume down to 0 and only
+    turns back up a while after being unmuted — MassDroid, by the look of a
+    live log. ``slow_volume_return`` keeps it at 0 after the unmute."""
+
+    slow_volume_return: bool = False
+
+    _volume_before_mute: dict[str, int] = field(default_factory=dict, init=False)
+
     command_seconds: float = 0.0
     """How long a mute command takes to come back, as a slow server's would.
     It takes effect when it returns."""
@@ -235,6 +244,12 @@ class FakeMusicAssistant:
         # Accepted and ignored, which is what makes this failure so quiet.
         if player_id in self.ignores_mute:
             return
+        if player_id in self.zeroes_volume_on_mute:
+            if muted and self.volumes.get(player_id, 50):
+                self._volume_before_mute[player_id] = self.volumes.get(player_id, 50)
+                self.volumes[player_id] = 0
+            elif not muted and not self.slow_volume_return:
+                self.volumes[player_id] = self._volume_before_mute.pop(player_id, 50)
 
         self._commanded_mute[player_id] = muted
         if player_id in self.mute_is_cosmetic:

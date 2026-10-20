@@ -84,7 +84,8 @@ class PlayerInfo:
     provider: str
     available: bool = True
     powered: bool = True
-    volume_level: int = 50
+    volume_level: int | None = 50
+    """``None`` when the server does not report it."""
     muted: bool | None = False
     """``None`` when the server does not report it.
 

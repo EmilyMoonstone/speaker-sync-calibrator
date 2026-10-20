@@ -1396,7 +1396,17 @@ class PlayerStateSnapshot:
                     say(en=f"the mute of «{current.name}»", ru=f"заглушение «{current.name}»"),
                     backend.set_muted(player_id, before.muted),
                 )
-            if before.volume_level is not None and current.volume_level != before.volume_level:
+            # Volume is never changed by a session, so it is put back only
+            # when it fell to nothing during one — a client that mutes by
+            # turning itself down and does not turn back up. Anything else is
+            # left alone: a volume the listener changed meanwhile is theirs, and
+            # a "before" read while such a client was still down was 0, which
+            # restoring then wrote back for good.
+            if (
+                before.volume_level
+                and current.volume_level is not None
+                and current.volume_level == 0
+            ):
                 await attempt(
                     say(en=f"the volume of «{current.name}»", ru=f"громкость «{current.name}»"),
                     backend.set_volume(player_id, before.volume_level),

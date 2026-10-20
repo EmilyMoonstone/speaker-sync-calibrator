@@ -179,3 +179,52 @@ async def test_a_group_redirected_elsewhere_is_not_mistaken_for_success():
 
     with pytest.raises(RuntimeError, match="did not join"):
         await confirm_group(server, "esp32", ["esp32", "avr", "bt"], sleep=clock.sleep)
+
+
+async def test_a_volume_that_fell_to_zero_comes_back():
+    """A client that mutes by turning itself down, and is slow to turn back
+    up: left alone, the speaker would stay at 0 after the run."""
+    server, recorder, clock = make_server(snr_db=30.0)
+    server.volumes["bt"] = 72
+    server.zeroes_volume_on_mute = {"bt"}
+    server.slow_volume_return = True
+
+    await calibrate(server, recorder, sleep=clock.sleep)
+
+    assert server.volumes["bt"] == 72
+
+
+async def test_a_zero_read_before_the_run_is_never_written_back():
+    """The live failure: the "before" was read while the phone app was still
+    turned down from the previous run, and restoring wrote 0 for good."""
+    server, recorder, clock = make_server(snr_db=30.0)
+    server.volumes["bt"] = 0  # still down from last time
+    snapshot = await PlayerStateSnapshot.take(server, ["esp32", "avr", "bt"])
+    server.volumes["bt"] = 72  # the app turned itself back up meanwhile
+
+    await snapshot.restore(server)
+
+    assert server.volumes["bt"] == 72
+    assert not any(entry[0] == "volume" for entry in server.log)
+
+
+async def test_a_volume_the_listener_changed_during_the_run_is_left_alone():
+    server, recorder, clock = make_server(snr_db=30.0)
+    server.volumes["esp32"] = 40
+    snapshot = await PlayerStateSnapshot.take(server, ["esp32", "avr", "bt"])
+    server.volumes["esp32"] = 65  # turned up by hand while measuring
+
+    await snapshot.restore(server)
+
+    assert server.volumes["esp32"] == 65
+
+
+async def test_an_unreported_volume_is_not_taken_for_silence():
+    from tests.test_ma_client import FakeClient, FakePlayer, delay_entry
+    from speaker_sync.ma.client import MusicAssistantBackend
+
+    client = FakeClient([FakePlayer("pixel", "Pixel9", volume_level=None)], entries={"pixel": [delay_entry()]})
+
+    (player,) = await MusicAssistantBackend(client).list_players()
+
+    assert player.volume_level is None

@@ -257,7 +257,11 @@ class MusicAssistantBackend:
                     provider=player.provider or "",
                     available=bool(player.available),
                     powered=bool(player.powered),
-                    volume_level=int(player.volume_level or 0),
+                    # None stays None: an unreported volume is not silence, and
+                    # taking it for 0 once had a restore turn a speaker down to 0.
+                    volume_level=(
+                        None if player.volume_level is None else int(player.volume_level)
+                    ),
                     # Not coerced to bool: an unreported state must stay
                     # distinguishable from a reported "not muted".
                     muted=player.volume_muted,
