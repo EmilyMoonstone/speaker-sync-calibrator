@@ -14,7 +14,7 @@ discarded as a guard instead.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from speaker_sync.dsp.analysis import RobustEstimate, robust_estimate, samples_to_ms
@@ -170,6 +170,7 @@ def analyze(
     *,
     sample_rate: int,
     guard_chirps: int = DEFAULT_GUARD_CHIRPS,
+    names: Mapping[str, str] | None = None,
 ) -> MeasurementAnalysis:
     """Reduce detected arrivals to one latency per speaker.
 
@@ -180,6 +181,10 @@ def analyze(
     """
     if not arrivals:
         return MeasurementAnalysis({}, 0.0, problems=(say(en="no chirps were found in the recording", ru="в записи не найдено ни одного свиста"),))
+
+    def named(player_id: str) -> str:
+        # The listener knows the speaker by its name, not by an internal id.
+        return f"«{names[player_id]}»" if names and player_id in names else player_id
 
     offset = min(a.chirp_index for a in arrivals)
     by_chirp = {a.chirp_index - offset: a for a in arrivals}
@@ -201,8 +206,8 @@ def analyze(
         if not readings_in_round:
             problems.append(
                 say(
-                    en=f"{plan.player_id}: no chirp was heard in its round",
-                    ru=f"{plan.player_id}: не слышно ни одного свиста в своём круге",
+                    en=f"{named(plan.player_id)}: no chirp was heard in its round",
+                    ru=f"{named(plan.player_id)}: не слышно ни одного свиста в своём круге",
                 )
             )
 
@@ -228,9 +233,9 @@ def analyze(
         if worst_ms > OUTLIER_TOLERANCE_MS:
             problems.append(
                 say(
-                    en=f"{plan.player_id}: one reading is {worst_ms:.1f} ms off the others — "
+                    en=f"{named(plan.player_id)}: one reading is {worst_ms:.1f} ms off the others — "
                     "the recording or the stream glitched in this round",
-                    ru=f"{plan.player_id}: один отсчёт отличается от остальных на {worst_ms:.1f} мс — "
+                    ru=f"{named(plan.player_id)}: один отсчёт отличается от остальных на {worst_ms:.1f} мс — "
                     "в этом круге сбоила запись или поток",
                 )
             )

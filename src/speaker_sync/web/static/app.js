@@ -1142,7 +1142,8 @@ function showReport(report) {
     const detail = t('moved_by', {
       observed: v.observed_ms.toFixed(1), expected: v.expected_ms.toFixed(1),
     });
-    return `<span class="pill ${v.held ? 'on' : 'off'}">${v.held ? '✓' : '✗'}</span>`
+    const [kind, mark] = v.held ? ['on', '✓'] : v.unclear ? ['warn', '?'] : ['off', '✗'];
+    return `<span class="pill ${kind}">${mark}</span>`
       + `<span class="sub">${escapeHtml(detail)}</span>`;
   };
   el('corrections').innerHTML =

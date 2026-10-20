@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.3 (fork EmilyMoonstone)
+- A correction that misses by less than the speaker wanders on its own is shown as **?** ("cannot tell whether the new delay is in force") rather than a red ✗ claiming the client ignored it. Live, the PC wandered 8 ms between passes and was asked to move 7 ms.
+- Notes about a round name the speaker («Emily-PC») instead of its internal id.
+
 ## 0.7.2 (fork EmilyMoonstone)
 - Fix: a speaker's current delay could read as 0 for every player, not only linked protocols — Music Assistant sends the value as `current_value` next to an empty `value`, and the empty one won. When a setting arrives without its value, the add-on now asks Music Assistant for it directly. Read-back after a write now sees the real value too.
 

@@ -598,7 +598,13 @@ async def measure_once(
         f_start=cfg.f_start,
         f_end=cfg.f_end,
     )
-    analysis = analyze(arrivals, rounds, sample_rate=sample_rate, guard_chirps=cfg.guard_chirps)
+    analysis = analyze(
+        arrivals,
+        rounds,
+        sample_rate=sample_rate,
+        guard_chirps=cfg.guard_chirps,
+        names={p.player_id: p.name for p in players},
+    )
     _log_pass(analysis, players, aligned=origin is not None)
 
     check = None
@@ -1154,6 +1160,11 @@ class PlayerVerification:
     observed_ms: float
     """How far it did move, relative to the same anchor."""
 
+    noise_ms: float = 0.0
+    """How far this speaker and the anchor wandered between passes on their
+    own, before anything was written: no movement smaller than that can be
+    told apart from the wandering."""
+
     @property
     def error_ms(self) -> float:
         return self.observed_ms - self.expected_ms
@@ -1163,12 +1174,19 @@ class PlayerVerification:
         tolerance = max(MOVE_TOLERANCE_MS, abs(self.expected_ms) * MOVE_TOLERANCE_SHARE)
         return abs(self.error_ms) <= tolerance
 
+    @property
+    def unclear(self) -> bool:
+        """Missed, but by less than the speakers wander anyway: not evidence
+        that the write was ignored."""
+        return not self.held and abs(self.error_ms) <= self.noise_ms
+
 
 def verify_movements(
     before: MeasurementPass,
     after: MeasurementPass,
     solution: CalibrationSolution,
     sign: int,
+    variation: dict[str, float] | None = None,
 ) -> dict[str, PlayerVerification]:
     """Compare each speaker's movement with what its correction asked for.
 
@@ -1191,11 +1209,13 @@ def verify_movements(
         pid: after.latencies_ms[pid] - before.latencies_ms[pid] for pid in expected
     }
     anchor = min(expected, key=lambda pid: abs(expected[pid]))
+    wander = variation or {}
     return {
         pid: PlayerVerification(
             player_id=pid,
             expected_ms=expected[pid] - expected[anchor],
             observed_ms=observed[pid] - observed[anchor],
+            noise_ms=wander.get(pid, 0.0) + wander.get(anchor, 0.0),
         )
         for pid in expected
         if pid != anchor
@@ -1210,6 +1230,22 @@ def _check_the_movements(
         if check.held:
             continue
         name = names.get(pid, pid)
+        if check.unclear:
+            problems.append(
+                say(
+                    en=f"«{name}» should have moved {check.expected_ms:+.1f} ms and moved "
+                    f"{check.observed_ms:+.1f} ms — less than it wanders on its own "
+                    f"({check.noise_ms:.1f} ms between measurements), so this cannot tell "
+                    "whether the new delay is in force. “Test” a few times shows where it "
+                    "settles.",
+                    ru=f"«{name}» должна была сдвинуться на {check.expected_ms:+.1f} мс и "
+                    f"сдвинулась на {check.observed_ms:+.1f} мс — меньше, чем она гуляет сама "
+                    f"по себе ({check.noise_ms:.1f} мс между замерами), поэтому нельзя "
+                    "сказать, действует ли новая задержка. Несколько «Тестов» покажут, где "
+                    "она останавливается.",
+                )
+            )
+            continue
         problems.append(
             say(
                 en=f"«{name}» should have moved {check.expected_ms:+.1f} ms but moved "
@@ -1702,7 +1738,9 @@ async def _calibrate(
         if after.together is not None:
             problems.extend(after.together.problems)
 
-        verifications = verify_movements(before, after, solution, sign)
+        verifications = verify_movements(
+            before, after, solution, sign, combined.variation_ms
+        )
         problems.extend(_check_the_movements(verifications, names))
 
         refinements = 0
@@ -1735,7 +1773,9 @@ async def _calibrate(
             problems.extend(after.analysis.problems)
             if after.together is not None:
                 problems.extend(after.together.problems)
-            verifications = verify_movements(before, after, solution, sign)
+            verifications = verify_movements(
+                before, after, solution, sign, combined.variation_ms
+            )
             problems.extend(_check_the_movements(verifications, names))
 
         if after.relative_spread_ms() > before.relative_spread_ms():

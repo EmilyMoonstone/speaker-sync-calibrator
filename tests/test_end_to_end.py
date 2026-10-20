@@ -451,7 +451,8 @@ async def test_a_mid_round_glitch_is_reported_without_spoiling_the_result():
 
     assert report.spread_after_ms is not None
     assert report.spread_after_ms < 3.0
-    assert any("avr" in problem for problem in report.problems)
+    # Named as the listener knows it, not by its id.
+    assert any("«Гостиная»" in problem for problem in report.problems)
 
 
 async def test_noisy_room_still_converges():

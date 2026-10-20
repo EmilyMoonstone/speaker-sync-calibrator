@@ -1130,6 +1130,7 @@ def describe(report: CalibrationReport) -> dict:
             "expected_ms": round(check.expected_ms, 1),
             "observed_ms": round(check.observed_ms, 1),
             "held": check.held,
+            "unclear": check.unclear,
         }
 
     return {

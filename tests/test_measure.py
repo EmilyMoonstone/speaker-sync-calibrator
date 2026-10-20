@@ -152,3 +152,17 @@ def test_no_arrivals_at_all_is_reported_not_crashed():
 
     assert analysis.readings == {}
     assert analysis.problems
+
+
+def test_a_note_names_the_speaker_rather_than_its_id():
+    """The live notes read "ma_companion_bf7b9f56-…: one reading is 6.5 ms
+    off" — an id the listener has never seen."""
+    rounds = plan_rounds("a", ["a", "b"], chirps_per_round=5)
+    heard = {i: 0.0 for i in range(rounds[0].first_chirp, rounds[0].last_chirp + 1)}
+
+    analysis = analyze(
+        arrivals_from(heard), rounds, sample_rate=RATE, names={"a": "Emily-PC", "b": "Anlage"}
+    )
+
+    assert any(p.startswith("«Anlage»: no chirp was heard") for p in analysis.problems)
+    assert not any(p.startswith("b:") for p in analysis.problems)
